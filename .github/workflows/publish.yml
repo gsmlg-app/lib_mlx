@@ -1,0 +1,161 @@
+name: Publish to pub.dev
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version or tag to publish (e.g. 0.3.1 or v0.3.1)
+        required: true
+        type: string
+      git_ref:
+        description: Git ref to publish from
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.version || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.44.0'
+  PUBLISH_TAG: ${{ inputs.version || github.ref_name }}
+  PUBLISH_REF: ${{ inputs.git_ref || github.ref }}
+
+jobs:
+  publish:
+    name: Publish lib_mlx
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PUBLISH_REF }}
+
+      - name: Setup Dart OIDC credentials
+        uses: dart-lang/setup-dart@v1
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Validate package
+        run: flutter pub publish --dry-run --ignore-warnings
+
+      - name: Publish lib_mlx
+        env:
+          PACKAGE: lib_mlx
+        run: |
+          set -euo pipefail
+          version="$(awk '/^version:/ { print $2; exit }' pubspec.yaml)"
+          status="$(
+            curl -sS -o "$RUNNER_TEMP/package.json" \
+              -w '%{http_code}' \
+              "https://pub.dev/api/packages/${PACKAGE}"
+          )"
+          if [[ "$status" == "404" ]]; then
+            echo "::error::${PACKAGE} is not published yet. Use first-publish.yml for the initial publication."
+            exit 1
+          fi
+          if [[ "$status" != "200" ]]; then
+            echo "::error::pub.dev returned HTTP ${status} for ${PACKAGE}"
+            cat "$RUNNER_TEMP/package.json"
+            exit 1
+          fi
+          published="$(
+            VERSION="$version" python3 -c 'import json, os, sys; print("yes" if any(item["version"] == os.environ["VERSION"] for item in json.load(open(sys.argv[1])).get("versions", [])) else "no")' "$RUNNER_TEMP/package.json"
+          )"
+          if [[ "$published" == "yes" ]]; then
+            echo "${PACKAGE} ${version} is already published; skipping"
+            exit 0
+          fi
+          if ! flutter pub publish --force 2>&1 | tee publish.log; then
+            if grep -Eiq 'already (published|exists)|version .* already' publish.log; then
+              echo "${PACKAGE} ${version} is already published; treating as success"
+              exit 0
+            fi
+            exit 1
+          fi
+
+  wait-for-package:
+    name: Wait for lib_mlx
+    runs-on: ubuntu-latest
+    needs:
+      - publish
+    timeout-minutes: 12
+
+    steps:
+      - name: Wait for pub.dev indexing
+        env:
+          PACKAGE: lib_mlx
+        run: |
+          set -euo pipefail
+          version="${PUBLISH_TAG#v}"
+          echo "Waiting for ${PACKAGE} ${version} on pub.dev"
+          for attempt in {1..40}; do
+            latest="$(
+              curl -fsSL "https://pub.dev/api/packages/${PACKAGE}" |
+                python3 -c 'import json, sys; print(json.load(sys.stdin)["latest"]["version"])'
+            )"
+            if [[ "$latest" == "$version" ]]; then
+              echo "${PACKAGE} ${version} is indexed"
+              break
+            fi
+            if [[ "$attempt" == "40" ]]; then
+              echo "::error::${PACKAGE} latest version is ${latest}, expected ${version}"
+              exit 1
+            fi
+            sleep 15
+          done
+
+  fresh-pub-build-smoke:
+    name: Fresh pub.dev iOS build
+    runs-on: macos-15
+    needs:
+      - wait-for-package
+    timeout-minutes: 45
+
+    steps:
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build fresh iOS app from pub.dev package
+        env:
+          VERSION: ${{ env.PUBLISH_TAG }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          app_dir="$RUNNER_TEMP/lib_mlx_pub_smoke"
+          rm -rf "$app_dir"
+          flutter create --platforms=ios "$app_dir"
+          cd "$app_dir"
+          for attempt in {1..40}; do
+            if flutter pub add "lib_mlx:${version}"; then
+              break
+            fi
+            if [[ "$attempt" == "40" ]]; then
+              echo "::error::lib_mlx ${version} is not resolvable from pub.dev"
+              exit 1
+            fi
+            echo "Waiting for lib_mlx ${version} to become resolvable from pub.dev (attempt ${attempt}/40)."
+            sleep 15
+          done
+          flutter build ios --simulator --debug
