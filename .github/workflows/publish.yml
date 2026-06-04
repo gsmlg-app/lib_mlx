@@ -147,6 +147,19 @@ jobs:
           rm -rf "$app_dir"
           flutter create --platforms=ios "$app_dir"
           cd "$app_dir"
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          project = Path("ios/Runner.xcodeproj/project.pbxproj")
+          text = project.read_text()
+          text = re.sub(
+              r"IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;",
+              "IPHONEOS_DEPLOYMENT_TARGET = 17.0;",
+              text,
+          )
+          project.write_text(text)
+          PY
           for attempt in {1..40}; do
             if flutter pub add "lib_mlx:${version}"; then
               break
