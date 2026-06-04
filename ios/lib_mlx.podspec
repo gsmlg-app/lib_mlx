@@ -4,7 +4,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'lib_mlx'
-  s.version          = '0.0.1'
+  s.version          = '0.1.0'
   s.summary          = 'iOS-only Flutter FFI management bridge for a local MLX OpenAI server.'
   s.description      = <<-DESC
 iOS-only Flutter FFI management bridge for a local Swift MLX inference core
