@@ -61,7 +61,7 @@ Package.swift                  The root SwiftPM package configuration mirroring 
 
 ## Native C API (FFI Lifecycle ABI)
 
-The native interface is defined in [src/lib_mlx.h](file:///Users/gao/Workspace/gsmlg-app/lib_mlx/src/lib_mlx.h). All methods return dynamically allocated JSON strings that must be freed using `lib_mlx_free`.
+The native interface is defined in [src/lib_mlx.h](src/lib_mlx.h). All methods return dynamically allocated JSON strings that must be freed using `lib_mlx_free`.
 
 ### 1. `lib_mlx_load_model`
 Loads a local MLX model directory.
@@ -156,7 +156,7 @@ Frees a string pointer allocated by the native runtime.
 
 ## Dart API Reference
 
-Dart wrappers are placed under the [lib/src/](file:///Users/gao/Workspace/gsmlg-app/lib_mlx/lib/src/) directory.
+Dart wrappers are placed under the [lib/src/](lib/src/) directory.
 
 ### Lifecyle Management (`LibMlxRuntime`)
 `LibMlxRuntime` wraps the low-level FFI bindings, managing handles and running C calls within Dart `Isolates` to prevent main-thread blockage:
@@ -308,6 +308,54 @@ Implements streaming using the OpenAI Responses lifecycle spec. The SSE streamin
 ### Prerequisites
 - macOS host running Swift 5.9+ / Xcode 15+
 - Flutter SDK configured for iOS development
+
+### iOS Host App Configuration
+
+Set the minimum iOS version in your app's `ios/Podfile`:
+```ruby
+platform :ios, '17.0'
+```
+
+Use static framework linkage in `ios/Podfile`:
+```ruby
+use_frameworks! :linkage => :static
+```
+
+Enable file sharing in `ios/Runner/Info.plist` if the app needs users to import or inspect local model files:
+```xml
+<key>UIFileSharingEnabled</key>
+<true/>
+```
+
+Add a local network access description in `ios/Runner/Info.plist` for development builds that expose or discover local inference services:
+```xml
+<key>NSLocalNetworkUsageDescription</key>
+<string>This app requires local network access for model inference services.</string>
+```
+
+Optionally disable the minimum frame duration limit in `ios/Runner/Info.plist` for smoother high-refresh-rate UI:
+```xml
+<key>CADisableMinimumFrameDurationOnPhone</key>
+<true/>
+```
+
+For large on-device models, add memory entitlements in `ios/Runner/Runner.entitlements`:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.developer.kernel.extended-virtual-addressing</key>
+  <true/>
+  <key>com.apple.developer.kernel.increased-memory-limit</key>
+  <true/>
+  <key>com.apple.developer.kernel.increased-debugging-memory-limit</key>
+  <true/>
+</dict>
+</plist>
+```
+
+No host-side `Podfile` `post_install` hook is required for `lib_mlx`; the package's iOS Swift package and podspec already declare the required iOS platform and native library layout.
 
 ### Commands
 
