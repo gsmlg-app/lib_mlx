@@ -1,5 +1,10 @@
 # lib_mlx
 
+[![pub package](https://img.shields.io/pub/v/lib_mlx.svg)](https://pub.dev/packages/lib_mlx)
+[![CI](https://github.com/gsmlg-app/lib_mlx/actions/workflows/ci.yml/badge.svg)](https://github.com/gsmlg-app/lib_mlx/actions/workflows/ci.yml)
+[![End-to-End](https://github.com/gsmlg-app/lib_mlx/actions/workflows/e2e.yml/badge.svg)](https://github.com/gsmlg-app/lib_mlx/actions/workflows/e2e.yml)
+[![Tests](https://github.com/gsmlg-app/lib_mlx/actions/workflows/test.yml/badge.svg)](https://github.com/gsmlg-app/lib_mlx/actions/workflows/test.yml)
+
 An iOS-only Flutter FFI management bridge for a local Swift MLX inference core and an OpenAI-compatible localhost server.
 
 This library provides a **hybrid lifecycle model** where native code manages the MLX model footprint and the local network listener via a low-level C FFI interface, while inference inputs, outputs, and Server-Sent Events (SSE) stream content are routed over a standard localhost HTTP server to bypass the performance and complexity overhead of cross-FFI binary serialization.
