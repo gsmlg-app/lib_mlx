@@ -3,6 +3,7 @@ export 'src/openai_client.dart'
     show LibMlxOpenAiClient, MlxHttpException, MlxSseEvent;
 export 'src/types.dart'
     show
+        MlxAvailableModel,
         MlxLifecycleException,
         MlxModelConfig,
         MlxModelHandle,

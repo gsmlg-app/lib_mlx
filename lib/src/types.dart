@@ -1,11 +1,58 @@
+class MlxAvailableModel {
+  const MlxAvailableModel._({
+    required this.id,
+    required this.huggingFaceModelId,
+  });
+
+  static const gemma4E4bId = 'gemma-4-e4b';
+  static const gemma4E4bHuggingFaceModelId =
+      'mlx-community/gemma-4-e4b-it-4bit';
+  static const gemma4E2bId = 'gemma-4-e2b';
+  static const gemma4E2bHuggingFaceModelId =
+      'mlx-community/gemma-4-e2b-it-4bit';
+
+  static const gemma4E4b = MlxAvailableModel._(
+    id: gemma4E4bId,
+    huggingFaceModelId: gemma4E4bHuggingFaceModelId,
+  );
+  static const gemma4E2b = MlxAvailableModel._(
+    id: gemma4E2bId,
+    huggingFaceModelId: gemma4E2bHuggingFaceModelId,
+  );
+
+  static const values = <MlxAvailableModel>[gemma4E4b, gemma4E2b];
+  static const byId = <String, MlxAvailableModel>{
+    gemma4E4bId: gemma4E4b,
+    gemma4E2bId: gemma4E2b,
+  };
+  static const defaultModel = gemma4E2b;
+  static const defaultHuggingFaceModelId = gemma4E2bHuggingFaceModelId;
+
+  final String id;
+  final String huggingFaceModelId;
+
+  String get huggingFaceModelPageUrl =>
+      'https://huggingface.co/$huggingFaceModelId';
+
+  static MlxAvailableModel? fromId(String id) => byId[id];
+}
+
 class MlxModelConfig {
   const MlxModelConfig({
     required this.modelPath,
-    this.modelId = 'mlx-community/gemma-4-e2b-it-4bit',
+    this.modelId = MlxAvailableModel.defaultHuggingFaceModelId,
     this.revision,
     this.thinkingEnabled = true,
     this.lazyEncoders = true,
   });
+
+  MlxModelConfig.forAvailableModel({
+    required this.modelPath,
+    required MlxAvailableModel model,
+    this.revision,
+    this.thinkingEnabled = true,
+    this.lazyEncoders = true,
+  }) : modelId = model.huggingFaceModelId;
 
   final String modelPath;
   final String modelId;
@@ -26,7 +73,7 @@ class MlxServerConfig {
   const MlxServerConfig({
     this.host = '127.0.0.1',
     this.port = 0,
-    this.modelId = 'mlx-community/gemma-4-e2b-it-4bit',
+    this.modelId = MlxAvailableModel.defaultHuggingFaceModelId,
     this.queueLimit = 1,
   });
 
@@ -68,7 +115,8 @@ class MlxServerInfo {
       port: json['port'] as int? ?? 0,
       baseUrl: json['base_url'] as String? ?? 'http://127.0.0.1:0',
       modelId:
-          json['model_id'] as String? ?? 'mlx-community/gemma-4-e2b-it-4bit',
+          json['model_id'] as String? ??
+          MlxAvailableModel.defaultHuggingFaceModelId,
       status: json['status'] as String? ?? 'unknown',
     );
   }

@@ -4,6 +4,34 @@ import MlxServer
 import XCTest
 
 final class LocalOpenAIServerTests: XCTestCase {
+    func testAvailableModelsExposeHuggingFacePages() throws {
+        XCTAssertEqual(MlxAvailableModel.all.map(\.id), ["gemma-4-e4b", "gemma-4-e2b"])
+        XCTAssertEqual(
+            MlxAvailableModel.named("gemma-4-e4b")?.huggingFaceModelId,
+            "mlx-community/gemma-4-e4b-it-4bit"
+        )
+        XCTAssertEqual(
+            MlxAvailableModel.gemma4E4b.huggingFaceModelPageURL.absoluteString,
+            "https://huggingface.co/mlx-community/gemma-4-e4b-it-4bit"
+        )
+        XCTAssertEqual(
+            MlxAvailableModel.named("gemma-4-e2b")?.huggingFaceModelId,
+            "mlx-community/gemma-4-e2b-it-4bit"
+        )
+        XCTAssertEqual(
+            MlxAvailableModel.gemma4E2b.huggingFaceModelPageURL.absoluteString,
+            "https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit"
+        )
+        XCTAssertNil(MlxAvailableModel.named("gemma-4-e9b"))
+    }
+
+    func testModelConfigCanUseAvailableModelAlias() throws {
+        let config = MlxModelConfig(modelPath: "/tmp/gemma-4-e4b", model: .gemma4E4b)
+
+        XCTAssertEqual(config.modelPath, "/tmp/gemma-4-e4b")
+        XCTAssertEqual(config.modelId, "mlx-community/gemma-4-e4b-it-4bit")
+    }
+
     func testChatCompletionKeepsReasoningSeparateFromContent() throws {
         let server = try makeStartedServer()
         defer { server.instance.stop() }

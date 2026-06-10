@@ -124,9 +124,12 @@ private final class RuntimeRegistry: @unchecked Sendable {
 @_cdecl("lib_mlx_load_model")
 public func lib_mlx_load_model(_ configJson: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
     let object = parseObject(configJson)
+    let modelId = object["model_id"] as? String
+        ?? object["modelId"] as? String
+        ?? MlxAvailableModel.defaultModel.huggingFaceModelId
     let config = MlxModelConfig(
         modelPath: object["model_path"] as? String ?? object["modelPath"] as? String ?? "",
-        modelId: object["model_id"] as? String ?? object["modelId"] as? String ?? "mlx-community/gemma-4-e2b-it-4bit",
+        modelId: modelId,
         revision: object["revision"] as? String,
         thinkingEnabled: object["thinking_enabled"] as? Bool ?? object["thinkingEnabled"] as? Bool ?? true,
         lazyEncoders: object["lazy_encoders"] as? Bool ?? object["lazyEncoders"] as? Bool ?? true
@@ -138,10 +141,13 @@ public func lib_mlx_load_model(_ configJson: UnsafePointer<CChar>?) -> UnsafeMut
 public func lib_mlx_start_server(_ handle: Int64, _ configJson: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
     let object = parseObject(configJson)
     let port = UInt16(clamping: object["port"] as? Int ?? 0)
+    let modelId = object["model_id"] as? String
+        ?? object["modelId"] as? String
+        ?? MlxAvailableModel.defaultModel.huggingFaceModelId
     let config = MlxServerConfig(
         host: object["host"] as? String ?? "127.0.0.1",
         port: port,
-        modelId: object["model_id"] as? String ?? object["modelId"] as? String ?? "mlx-community/gemma-4-e2b-it-4bit",
+        modelId: modelId,
         queueLimit: object["queue_limit"] as? Int ?? object["queueLimit"] as? Int ?? 1
     )
     return retainedJSONString(RuntimeRegistry.shared.startServer(handle: handle, config: config))

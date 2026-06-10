@@ -1,5 +1,35 @@
 import Foundation
 
+public struct MlxAvailableModel: Sendable, Equatable {
+    public let id: String
+    public let huggingFaceModelId: String
+
+    public var huggingFaceModelPageURL: URL {
+        URL(string: "https://huggingface.co/\(huggingFaceModelId)")!
+    }
+
+    private init(id: String, huggingFaceModelId: String) {
+        self.id = id
+        self.huggingFaceModelId = huggingFaceModelId
+    }
+
+    public static let gemma4E4b = MlxAvailableModel(
+        id: "gemma-4-e4b",
+        huggingFaceModelId: "mlx-community/gemma-4-e4b-it-4bit"
+    )
+    public static let gemma4E2b = MlxAvailableModel(
+        id: "gemma-4-e2b",
+        huggingFaceModelId: "mlx-community/gemma-4-e2b-it-4bit"
+    )
+
+    public static let all = [gemma4E4b, gemma4E2b]
+    public static let defaultModel = gemma4E2b
+
+    public static func named(_ id: String) -> MlxAvailableModel? {
+        all.first { $0.id == id }
+    }
+}
+
 public struct MlxModelConfig: Sendable {
     public let modelPath: String
     public let modelId: String
@@ -9,7 +39,7 @@ public struct MlxModelConfig: Sendable {
 
     public init(
         modelPath: String,
-        modelId: String = "mlx-community/gemma-4-e2b-it-4bit",
+        modelId: String = MlxAvailableModel.defaultModel.huggingFaceModelId,
         revision: String? = nil,
         thinkingEnabled: Bool = true,
         lazyEncoders: Bool = true
@@ -19,6 +49,22 @@ public struct MlxModelConfig: Sendable {
         self.revision = revision
         self.thinkingEnabled = thinkingEnabled
         self.lazyEncoders = lazyEncoders
+    }
+
+    public init(
+        modelPath: String,
+        model: MlxAvailableModel,
+        revision: String? = nil,
+        thinkingEnabled: Bool = true,
+        lazyEncoders: Bool = true
+    ) {
+        self.init(
+            modelPath: modelPath,
+            modelId: model.huggingFaceModelId,
+            revision: revision,
+            thinkingEnabled: thinkingEnabled,
+            lazyEncoders: lazyEncoders
+        )
     }
 }
 

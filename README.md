@@ -170,11 +170,15 @@ Dart wrappers are placed under the [lib/src/](lib/src/) directory.
 import 'package:lib_mlx/lib_mlx.dart';
 
 final runtime = LibMlxRuntime();
+const model = MlxAvailableModel.gemma4E2b;
+
+print(model.huggingFaceModelPageUrl); // https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit
 
 // 1. Load Model
 final handle = await runtime.loadModel(
-  const MlxModelConfig(
+  MlxModelConfig.forAvailableModel(
     modelPath: '/path/to/gemma-4-e2b-it-4bit',
+    model: model,
     thinkingEnabled: true,
   ),
 );
@@ -193,6 +197,14 @@ print('Model status: ${status.modelStatus}, Server status: ${status.serverStatus
 // 4. Unload model & stop server
 await runtime.unloadModel(handle);
 ```
+
+### Supported Models
+Only these model aliases are currently exposed:
+
+| Alias | Hugging Face model |
+| --- | --- |
+| `gemma-4-e4b` | `mlx-community/gemma-4-e4b-it-4bit` |
+| `gemma-4-e2b` | `mlx-community/gemma-4-e2b-it-4bit` |
 
 ### OpenAI Client (`LibMlxOpenAiClient`)
 The client establishes a connection to the local HTTP server. It supports both standard HTTP JSON requests and Server-Sent Events (SSE) streams:
