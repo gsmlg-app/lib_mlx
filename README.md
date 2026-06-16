@@ -51,16 +51,17 @@ Streaming raw audio/video frames, multimodal tokens, reasoning events, and tool 
 ## Directory Layout
 
 ```text
+ios/FlutterFramework/          Stub FlutterFramework package for direct SwiftPM builds
 ios/lib_mlx/Sources/MlxCore/   Structured native inference types and stub core
 ios/lib_mlx/Sources/MlxServer/ Standalone Swift localhost OpenAI server (using NWListener)
-ios/lib_mlx/Sources/lib_mlx/   @_cdecl C lifecycle shim
+ios/lib_mlx/Sources/lib_mlx/   @_cdecl C lifecycle shim and SwiftPM plugin target
 lib/                           Dart management APIs and the thin OpenAI HTTP client
 example/                       iOS runtime Flutter harness app for validation
 src/lib_mlx.h                  The ffigen input header describing the lifecycle ABI
 Package.swift                  The root SwiftPM package configuration mirroring targets
 ```
 
-*Note: The Swift package under `ios/lib_mlx` is the CocoaPods-compatible package for Flutter. The root `Package.swift` mirrors the exact same target definitions to allow host-side macOS debugging and tests (`swift test`) without running Xcode or linking to the Flutter SDK.*
+*Note: The Swift package under `ios/lib_mlx` is the Flutter SwiftPM plugin package and can be built directly with `swift build`. The committed `ios/FlutterFramework` package is only a source-checkout stub; Flutter app builds provide their generated FlutterFramework package. The root `Package.swift` mirrors the exact same target definitions to allow host-side macOS debugging and tests (`swift test`) without running Xcode.*
 
 ---
 
@@ -387,6 +388,7 @@ Run SwiftPM tests directly on macOS (without running Xcode or iOS Simulator):
 ```bash
 swift build
 swift test
+(cd ios/lib_mlx && swift build)
 ```
 
 **3. Run Dart Unit Tests**
@@ -399,6 +401,7 @@ flutter test
 To run the testing harness on an iOS simulator or physical device:
 ```bash
 cd example
+flutter config --enable-swift-package-manager
 flutter run
 ```
 

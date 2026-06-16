@@ -1,6 +1,6 @@
 name: lib_mlx
 description: iOS-only Flutter FFI management bridge for a local MLX OpenAI server.
-version: 0.1.0
+version: 0.1.1
 repository: https://github.com/gsmlg-app/lib_mlx
 
 environment:

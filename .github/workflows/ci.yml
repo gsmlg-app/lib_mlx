@@ -68,6 +68,10 @@ jobs:
       - name: Build Swift package
         run: swift build
 
+      - name: Build iOS SwiftPM package
+        working-directory: ios/lib_mlx
+        run: swift build
+
   ios-example-build:
     name: iOS example build
     runs-on: macos-15
@@ -86,6 +90,9 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+
+      - name: Enable Swift Package Manager
+        run: flutter config --enable-swift-package-manager
 
       - name: Cache pub dependencies
         uses: actions/cache@v4

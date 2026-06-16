@@ -5,7 +5,8 @@ import PackageDescription
 let package = Package(
     name: "lib_mlx",
     platforms: [
-        .iOS("17.0")
+        .iOS("17.0"),
+        .macOS("10.14")
     ],
     products: [
         .library(name: "MlxCore", targets: ["MlxCore"]),

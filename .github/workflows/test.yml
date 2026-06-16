@@ -65,3 +65,7 @@ jobs:
 
       - name: Run Swift tests
         run: swift test
+
+      - name: Build iOS SwiftPM package
+        working-directory: ios/lib_mlx
+        run: swift build

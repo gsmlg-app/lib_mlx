@@ -137,6 +137,9 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Enable Swift Package Manager
+        run: flutter config --enable-swift-package-manager
+
       - name: Build fresh iOS app from pub.dev package
         env:
           VERSION: ${{ env.PUBLISH_TAG }}
