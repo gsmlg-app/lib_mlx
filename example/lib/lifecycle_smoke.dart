@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:lib_mlx/lib_mlx.dart';
+import 'package:path_provider/path_provider.dart';
 
 // Physical-device probe: foreground this app, wait for the ready file, open
 // Settings, then reactivate this same process without --terminate-existing.
@@ -26,7 +27,9 @@ Future<void> main() async {
     ),
   );
   final witness = _LifecycleWitness();
-  final documents = '${Platform.environment['HOME']}/Documents';
+  final documentsDirectory = await getApplicationDocumentsDirectory();
+  await documentsDirectory.create(recursive: true);
+  final documents = documentsDirectory.path;
   const runId = String.fromEnvironment('LIB_MLX_SMOKE_RUN_ID');
   const runtime = LibMlxRuntime();
   MlxModelHandle? handle;

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'package:lib_mlx/runtime_smoke.dart';
 
@@ -21,13 +22,16 @@ Future<void> main() async {
       ),
     ),
   );
-  final home = Platform.environment['HOME'] ?? Directory.systemTemp.path;
+  // iOS standalone launches need not provide HOME. Resolve the sandbox's
+  // Documents directory through the platform rather than its temporary path.
+  final documents = await getApplicationDocumentsDirectory();
+  await documents.create(recursive: true);
   const configuredPath = String.fromEnvironment('LIB_MLX_MODEL_PATH');
   final path = configuredPath.isEmpty
-      ? '$home/Documents/gemma-4-e2b'
+      ? '${documents.path}/gemma-4-e2b'
       : configuredPath;
-  final reportPath = '$home/Documents/lib_mlx-smoke-report.json';
-  final progressFile = File('$home/Documents/lib_mlx-smoke-progress.json');
+  final reportPath = '${documents.path}/lib_mlx-smoke-report.json';
+  final progressFile = File('${documents.path}/lib_mlx-smoke-progress.json');
   void recordProgress(String phase) {
     progressFile.writeAsStringSync(
       jsonEncode({
