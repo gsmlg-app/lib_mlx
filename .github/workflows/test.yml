@@ -1,71 +1,30 @@
-name: Tests
+name: Focused tests
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
+
+env:
+  FLUTTER_SWIFT_PACKAGE_MANAGER: 'true'
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  FLUTTER_VERSION: '3.44.0'
-
 jobs:
-  flutter-tests:
-    name: Flutter package tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
+  tests:
+    name: Swift and public Dart protocol tests
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          flutter-version: '3.47.8'
           channel: stable
           cache: true
-
-      - name: Cache pub dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.pub-cache
-            .dart_tool
-          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pub-
-
-      - name: Install Dart and Flutter dependencies
-        run: flutter pub get
-
-      - name: Run Flutter tests
-        run: flutter test test
-
-  swift-tests:
-    name: Swift package tests
-    runs-on: macos-15
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app
-
-      - name: Run Swift tests
-        run: swift test
-
-      - name: Build iOS SwiftPM package
-        working-directory: ios/lib_mlx
-        run: swift build
+      - run: python3 tool/package_manifests.py --check
+      - run: swift test --jobs 2
+      - run: flutter pub get
+      - run: swift build --jobs 2 --product ProtocolTestHost
+      - run: LIB_MLX_PROTOCOL_HOST="$GITHUB_WORKSPACE/.build/debug/ProtocolTestHost" flutter test test

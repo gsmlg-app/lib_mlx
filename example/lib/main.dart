@@ -39,7 +39,9 @@ class _RuntimePageState extends State<RuntimePage> {
 
   MlxModelHandle? _handle;
   MlxServerInfo? _server;
-  String _status = Platform.isIOS ? 'idle' : 'unsupported platform';
+  String _status = (Platform.isIOS || Platform.isMacOS)
+      ? 'idle'
+      : 'unsupported platform';
   String _output = '';
   bool _busy = false;
 
@@ -85,7 +87,10 @@ class _RuntimePageState extends State<RuntimePage> {
                 _ActionButton(
                   icon: Icons.download_for_offline,
                   label: 'Load',
-                  enabled: Platform.isIOS && !_busy && _handle == null,
+                  enabled:
+                      (Platform.isIOS || Platform.isMacOS) &&
+                      !_busy &&
+                      _handle == null,
                   onPressed: _loadModel,
                 ),
                 const SizedBox(width: 8),
@@ -93,7 +98,7 @@ class _RuntimePageState extends State<RuntimePage> {
                   icon: Icons.play_arrow,
                   label: 'Start',
                   enabled:
-                      Platform.isIOS &&
+                      (Platform.isIOS || Platform.isMacOS) &&
                       !_busy &&
                       _handle != null &&
                       _server == null,
@@ -109,7 +114,10 @@ class _RuntimePageState extends State<RuntimePage> {
                 _ActionButton(
                   icon: Icons.health_and_safety,
                   label: 'Status',
-                  enabled: Platform.isIOS && !_busy && _handle != null,
+                  enabled:
+                      (Platform.isIOS || Platform.isMacOS) &&
+                      !_busy &&
+                      _handle != null,
                   onPressed: _refreshStatus,
                 ),
                 _ActionButton(
@@ -122,7 +130,7 @@ class _RuntimePageState extends State<RuntimePage> {
                   icon: Icons.stop,
                   label: 'Stop',
                   enabled:
-                      Platform.isIOS &&
+                      (Platform.isIOS || Platform.isMacOS) &&
                       !_busy &&
                       _handle != null &&
                       _server != null,
@@ -131,7 +139,10 @@ class _RuntimePageState extends State<RuntimePage> {
                 _ActionButton(
                   icon: Icons.delete_outline,
                   label: 'Unload',
-                  enabled: Platform.isIOS && !_busy && _handle != null,
+                  enabled:
+                      (Platform.isIOS || Platform.isMacOS) &&
+                      !_busy &&
+                      _handle != null,
                   onPressed: _unloadModel,
                 ),
               ],

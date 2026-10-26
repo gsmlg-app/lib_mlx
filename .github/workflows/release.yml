@@ -4,13 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version (e.g. 1.2.3). Leave empty to release pubspec.yaml version.
+        description: Existing pubspec.yaml version (leave empty to use it)
         required: false
         type: string
       git_ref:
-        description: Git ref to release from
+        description: Already versioned Git ref with matching real-model evidence
         required: true
         default: main
+        type: string
+      evidence_run_id:
+        description: Successful Real-model Flutter Release evidence workflow run containing both platforms
+        required: true
         type: string
 
 permissions:
@@ -18,173 +22,116 @@ permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.version || inputs.git_ref }}
-  cancel-in-progress: true
+  group: release-${{ inputs.git_ref }}
+  cancel-in-progress: false
 
 env:
-  FLUTTER_VERSION: '3.44.0'
+  FLUTTER_VERSION: '3.47.8'
+  FLUTTER_SWIFT_PACKAGE_MANAGER: 'true'
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+  LIB_MLX_MACOS_REPORT: build/release-evidence/macos-report.json
+  LIB_MLX_IOS_REPORT: build/release-evidence/ios-report.json
 
 jobs:
   release:
-    name: Validate, tag, and publish release
-    runs-on: macos-15
+    name: Gate current real-model evidence, validate, and release
+    runs-on: macos-26
     timeout-minutes: 90
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.git_ref }}
           fetch-depth: 0
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Enable Swift Package Manager
-        run: flutter config --enable-swift-package-manager
-
-      - name: Resolve release version
-        id: release_version
+      - name: Resolve already versioned release
+        id: version
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [[ -n "${REQUESTED_VERSION}" ]]; then
-            version="${REQUESTED_VERSION#v}"
-          else
-            version="$(awk '/^version:/ { print $2; exit }' pubspec.yaml)"
-          fi
-
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Invalid release version: ${version}"
-            exit 1
-          fi
-
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-      - name: Configure Git identity
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Update package versions
+          current="$(awk '/^version:/ { print $2; exit }' pubspec.yaml)"
+          version="${REQUESTED_VERSION#v}"
+          version="${version:-$current}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || { echo "Invalid release version: $version" >&2; exit 1; }
+          test "$version" = "$current" || { echo 'Update pubspec.yaml and regenerate both platform reports before releasing a different version.' >&2; exit 1; }
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - name: Require successful manual real-model workflow for this commit
         env:
-          VERSION: ${{ steps.release_version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          EVIDENCE_RUN_ID: ${{ inputs.evidence_run_id }}
         run: |
           set -euo pipefail
-          perl -0pi -e 's/^version: .+$/version: $ENV{VERSION}/m' pubspec.yaml
-          python3 - <<'PY'
-          import os
-          import re
-          from pathlib import Path
-
-          version = os.environ["VERSION"]
-          podspec = Path("ios/lib_mlx.podspec")
-          text = podspec.read_text()
-          text = re.sub(
-              r"(s\.version\s*=\s*['\"])[^'\"]+(['\"])",
-              rf"\g<1>{version}\2",
-              text,
-              count=1,
-          )
-          podspec.write_text(text)
+          [[ "$EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EVIDENCE_RUN_ID" > "$RUNNER_TEMP/evidence-run.json"
+          python3 - "$RUNNER_TEMP/evidence-run.json" "$(git rev-parse HEAD)" <<'PY'
+          import json, os, sys
+          run = json.load(open(sys.argv[1]))
+          if run.get('path') != '.github/workflows/e2e.yml': raise SystemExit('Evidence must come from e2e.yml')
+          if run.get('event') != 'workflow_dispatch' or run.get('conclusion') != 'success': raise SystemExit('Evidence workflow must finish successfully')
+          if run.get('head_sha') != sys.argv[2]: raise SystemExit('Evidence workflow must match this exact commit')
+          if run.get('head_repository', {}).get('full_name') != os.environ['GITHUB_REPOSITORY']: raise SystemExit('Evidence must belong to this repository')
           PY
-
-      - name: Install Dart and Flutter dependencies
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.evidence_run_id }}
+          github-token: ${{ github.token }}
+          pattern: flutter-release-*-report
+          merge-multiple: true
+          path: build/release-evidence
+      - name: Gate signed standalone Flutter Release reports for both platforms
+        run: python3 tool/release_gate.py
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed .
+      - run: flutter analyze .
+      - run: flutter test test
+      - run: python3 tool/package_manifests.py --check
+      - run: swift test --jobs 2
+      - name: Verify Release FFI and public Dart protocol path
+        run: |
+          swift build --jobs 2 -c release --product MlxRuntimeFFI
+          dart run tool/abi_smoke.dart .build/release/libMlxRuntimeFFI.dylib
+          swift build --jobs 2 --product ProtocolTestHost
+          LIB_MLX_PROTOCOL_HOST="$GITHUB_WORKSPACE/.build/debug/ProtocolTestHost" flutter test test/swift_protocol_integration_test.dart
+      - working-directory: example
         run: flutter pub get
-
-      - name: Check formatting
-        run: dart format --set-exit-if-changed .
-
-      - name: Analyze
-        run: flutter analyze .
-
-      - name: Run Flutter tests
-        run: flutter test test
-
-      - name: Run Swift tests
-        run: swift test
-
-      - name: Build iOS SwiftPM package
-        working-directory: ios/lib_mlx
-        run: swift build
-
-      - name: Install example dependencies
-        working-directory: example
-        run: flutter pub get
-
-      - name: Build iOS simulator example
-        working-directory: example
-        run: flutter build ios --simulator --debug
-
-      - name: Validate pub package
-        run: flutter pub publish --dry-run --ignore-warnings
-
-      - name: Create release artifacts
+      - name: Prepare unsigned hosted compilation settings
+        run: printf 'CODE_SIGNING_ALLOWED = NO\nCODE_SIGNING_REQUIRED = NO\nCODE_SIGN_IDENTITY = -\nCODE_SIGN_STYLE = Manual\nDEVELOPMENT_TEAM =\nEXCLUDED_ARCHS = x86_64\n' > "$RUNNER_TEMP/lib-mlx-unsigned.xcconfig"
+      - name: Compile unsigned Flutter Release hosts (compile evidence only)
         env:
-          VERSION: ${{ steps.release_version.outputs.version }}
+          XCODE_XCCONFIG_FILE: ${{ runner.temp }}/lib-mlx-unsigned.xcconfig
+        working-directory: example
+        run: |
+          flutter build macos --release
+          flutter build ios --release --no-codesign
+      - run: flutter pub publish --dry-run
+      - name: Recheck source identity immediately before release
+        run: python3 tool/release_gate.py
+      - name: Create source release artifact
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
           set -euo pipefail
           mkdir -p dist/release
           tar -czf "dist/release/lib_mlx-source-${VERSION}.tar.gz" \
-            --exclude='.git' \
-            --exclude='.build' \
-            --exclude='.swiftpm' \
-            --exclude='.dart_tool' \
-            --exclude='.github' \
-            --exclude='build' \
-            --exclude='dist' \
-            --exclude='ios/lib_mlx/.build' \
-            --exclude='ios/lib_mlx/.swiftpm' \
-            --exclude='example/.dart_tool' \
-            --exclude='example/build' \
-            --exclude='example/ios/Flutter/ephemeral' \
-            --exclude='example/ios/Flutter/Generated.xcconfig' \
-            --exclude='example/ios/Flutter/flutter_export_environment.sh' \
-            .
-          (
-            cd dist/release
-            shasum -a 256 "lib_mlx-source-${VERSION}.tar.gz" \
-              > "lib_mlx-source-${VERSION}.tar.gz.sha256"
-          )
-
-      - name: Commit version bump
-        env:
-          VERSION: ${{ steps.release_version.outputs.version }}
-        run: |
-          set -euo pipefail
-          git add pubspec.yaml ios/lib_mlx.podspec
-          if git diff --cached --quiet; then
-            echo "Package versions are already set to v${VERSION}."
-          else
-            git commit -m "chore(release): v${VERSION}"
-          fi
-          git push origin "HEAD:${{ inputs.git_ref }}"
-
+            --exclude='.git' --exclude='.build' --exclude='.swiftpm' --exclude='.dart_tool' \
+            --exclude='build' --exclude='dist' --exclude='ephemeral' --exclude='Pods' \
+            --exclude='xcuserdata' .
+          (cd dist/release && shasum -a 256 "lib_mlx-source-${VERSION}.tar.gz" > "lib_mlx-source-${VERSION}.tar.gz.sha256")
       - name: Create GitHub release and tag
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.release_version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
-          gh release create "v${VERSION}" dist/release/* \
-            --target "$(git rev-parse HEAD)" \
-            --generate-notes \
-            --title "v${VERSION}"
-
-      - name: Dispatch OIDC pub.dev publish
+          gh release create "v${VERSION}" dist/release/* --target "$(git rev-parse HEAD)" --generate-notes --title "v${VERSION}"
+      - name: Dispatch gated OIDC pub.dev publication
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.release_version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.value }}
+          EVIDENCE_RUN_ID: ${{ inputs.evidence_run_id }}
         run: |
-          gh workflow run publish.yml \
-            --repo "${GITHUB_REPOSITORY}" \
-            --ref "v${VERSION}" \
-            -f version="${VERSION}" \
-            -f git_ref="v${VERSION}"
+          gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "v${VERSION}" \
+            -f version="$VERSION" -f git_ref="v${VERSION}" -f evidence_run_id="$EVIDENCE_RUN_ID"

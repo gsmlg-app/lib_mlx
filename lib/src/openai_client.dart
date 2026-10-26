@@ -58,7 +58,9 @@ class LibMlxOpenAiClient {
     final request = await _httpClient.postUrl(_uri(path));
     _applyHeaders(request, accept: ContentType.json);
     request.headers.contentType = ContentType.json;
-    request.add(utf8.encode(jsonEncode(body)));
+    final bytes = utf8.encode(jsonEncode(body));
+    request.contentLength = bytes.length;
+    request.add(bytes);
     final response = await request.close();
     return _decodeJsonResponse(response);
   }
@@ -67,15 +69,49 @@ class LibMlxOpenAiClient {
     final request = await _httpClient.postUrl(_uri(path));
     _applyHeaders(request, accept: ContentType('text', 'event-stream'));
     request.headers.contentType = ContentType.json;
-    request.add(utf8.encode(jsonEncode(body)));
-    final response = await request.close();
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw await MlxHttpException.fromResponse(response);
-    }
+    request.persistentConnection = false;
+    final bytes = utf8.encode(jsonEncode(body));
+    request.contentLength = bytes.length;
+    request.add(bytes);
+    var terminal = false;
+    try {
+      final response = await request.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw await MlxHttpException.fromResponse(response);
+      }
+      if (response.headers.contentType?.mimeType != 'text/event-stream') {
+        final diagnostic = await response.transform(utf8.decoder).join();
+        throw MlxHttpException(
+          response.statusCode,
+          'Expected text/event-stream, received '
+          '${response.headers.contentType}: $diagnostic',
+        );
+      }
 
-    yield* parseSse(
-      response.transform(utf8.decoder).transform(const LineSplitter()),
-    );
+      await for (final event in parseSse(
+        response.transform(utf8.decoder).transform(const LineSplitter()),
+      )) {
+        final type = event.data?['type'] ?? event.event;
+        if (event.data?['error'] != null ||
+            type == 'error' ||
+            type == 'response.failed') {
+          throw MlxHttpException(response.statusCode, event.rawData ?? '$type');
+        }
+        terminal = path == '/v1/responses'
+            ? type == 'response.completed' || type == 'response.incomplete'
+            : event.done;
+        yield event;
+        if (terminal) return;
+      }
+      throw MlxHttpException(
+        response.statusCode,
+        'SSE connection ended before the terminal event.',
+      );
+    } finally {
+      // Cancelling the Dart subscription must close this request's socket so
+      // the server can cancel queued or active model work immediately.
+      if (!terminal) request.abort();
+    }
   }
 
   Future<Map<String, Object?>> _decodeJsonResponse(

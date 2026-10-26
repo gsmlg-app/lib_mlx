@@ -46,6 +46,9 @@ void main() {
       'revision': '99d9a53',
       'thinking_enabled': false,
       'lazy_encoders': true,
+      'context_length': 8192,
+      'prefill_step_size': 256,
+      'cache_limit_bytes': 64 * 1024 * 1024,
     });
   });
 
@@ -60,6 +63,9 @@ void main() {
       'model_id': 'mlx-community/gemma-4-e4b-it-4bit',
       'thinking_enabled': true,
       'lazy_encoders': true,
+      'context_length': 8192,
+      'prefill_step_size': 256,
+      'cache_limit_bytes': 64 * 1024 * 1024,
     });
   });
 

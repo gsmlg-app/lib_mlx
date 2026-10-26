@@ -1,0 +1,51 @@
+{
+  "repository": "mlx-community/gemma-4-e2b-it-4bit",
+  "revision": "238767527555cb75a05732a84dff5d6ba0dd6809",
+  "quantization": {
+    "bits": 4,
+    "group_size": 64,
+    "mode": "affine"
+  },
+  "files": [
+    {
+      "path": "chat_template.jinja",
+      "size": 17336,
+      "git_blob_sha1": "c19999a347da729cf62806a8ddb7eb8e315223b5"
+    },
+    {
+      "path": "config.json",
+      "size": 6395,
+      "git_blob_sha1": "1f8a26de63cd505f2fb5c98ad3f08f3e7f47a9de"
+    },
+    {
+      "path": "generation_config.json",
+      "size": 208,
+      "git_blob_sha1": "e605bb4523b1462ea9d9a3810b9e3ecf7ab7b1f6"
+    },
+    {
+      "path": "model.safetensors",
+      "size": 3550670554,
+      "sha256": "038e39a37a7667373d2c3991375446b10c96ae1d717a68674870343db376b76e"
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "size": 218323,
+      "git_blob_sha1": "b145d4f0cf82ffc8c1f9bef70da4b4083646382d"
+    },
+    {
+      "path": "processor_config.json",
+      "size": 1316,
+      "git_blob_sha1": "a086fb7e04b477c291a120b0a004abb78b11c6d2"
+    },
+    {
+      "path": "tokenizer.json",
+      "size": 32169626,
+      "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "size": 2740,
+      "git_blob_sha1": "cf6235aee46a24bf71f251c0a4e7a0379948f7d2"
+    }
+  ]
+}

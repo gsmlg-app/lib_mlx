@@ -1,0 +1,13 @@
+{
+  "validated_xcode": "27.1 (27A9275)",
+  "validated_swift": "6.4 (swiftlang-6.4.0.34.1)",
+  "validated_metal": "32023.921 (metalfe-32023.921.6)",
+  "minimum_swift_tools": "6.3",
+  "validated_flutter": "3.47.8",
+  "validated_dart": "3.13.7",
+  "minimum_platforms": {"macOS": "14.0", "iOS": "17.0", "tvOS": "17.0"},
+  "mlx_swift": "0.32.3",
+  "mlx_swift_lm": "3.32.3",
+  "swift_transformers": "1.3.0",
+  "swift_nio": "2.81.0"
+}

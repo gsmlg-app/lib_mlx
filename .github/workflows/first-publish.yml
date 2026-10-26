@@ -15,6 +15,10 @@ on:
         required: true
         default: main
         type: string
+      evidence_run_id:
+        description: Successful real-model e2e.yml run containing both platforms for this commit
+        required: true
+        type: string
       dry_run:
         description: Validate without publishing
         required: true
@@ -23,13 +27,17 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.package }}
   cancel-in-progress: false
 
 env:
-  FLUTTER_VERSION: '3.44.0'
+  FLUTTER_VERSION: '3.47.8'
+  FLUTTER_SWIFT_PACKAGE_MANAGER: 'true'
+  LIB_MLX_MACOS_REPORT: build/release-evidence/macos-report.json
+  LIB_MLX_IOS_REPORT: build/release-evidence/ios-report.json
 
 jobs:
   publish:
@@ -38,6 +46,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      actions: read
 
     steps:
       - name: Checkout
@@ -45,12 +54,43 @@ jobs:
         with:
           ref: ${{ inputs.git_ref }}
 
+      - name: Require successful manual real-model workflow for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVIDENCE_RUN_ID: ${{ inputs.evidence_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$EVIDENCE_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EVIDENCE_RUN_ID" > "$RUNNER_TEMP/evidence-run.json"
+          python3 - "$RUNNER_TEMP/evidence-run.json" "$(git rev-parse HEAD)" <<'PY'
+          import json, os, sys
+          run = json.load(open(sys.argv[1]))
+          if run.get('path') != '.github/workflows/e2e.yml': raise SystemExit('Evidence must come from e2e.yml')
+          if run.get('event') != 'workflow_dispatch' or run.get('conclusion') != 'success': raise SystemExit('Evidence workflow must finish successfully')
+          if run.get('head_sha') != sys.argv[2]: raise SystemExit('Evidence workflow must match this exact commit')
+          if run.get('head_repository', {}).get('full_name') != os.environ['GITHUB_REPOSITORY']: raise SystemExit('Evidence must belong to this repository')
+          PY
+
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.evidence_run_id }}
+          github-token: ${{ github.token }}
+          pattern: flutter-release-*-report
+          merge-multiple: true
+          path: build/release-evidence
+
+      - name: Gate signed standalone Flutter Release reports for both platforms
+        run: python3 tool/release_gate.py
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+
+      - name: Install package dependencies
+        run: flutter pub get
 
       - name: Resolve package
         id: package
@@ -122,7 +162,7 @@ jobs:
       - name: Validate package
         if: ${{ steps.published.outputs.should_publish == 'true' }}
         working-directory: ${{ steps.package.outputs.package_dir }}
-        run: flutter pub publish --dry-run --ignore-warnings
+        run: flutter pub publish --dry-run
 
       - name: Configure pub credentials
         if: ${{ steps.published.outputs.should_publish == 'true' && inputs.dry_run != true }}
@@ -205,4 +245,6 @@ jobs:
       - name: Publish package
         if: ${{ steps.published.outputs.should_publish == 'true' && inputs.dry_run != true }}
         working-directory: ${{ steps.package.outputs.package_dir }}
-        run: timeout 5m flutter pub publish --force
+        run: |
+          python3 tool/release_gate.py
+          timeout 5m flutter pub publish --force

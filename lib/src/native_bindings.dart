@@ -8,8 +8,8 @@ import '../lib_mlx_bindings_generated.dart';
 class MlxNativeBindings {
   MlxNativeBindings._(this._bindings);
 
-  factory MlxNativeBindings.open() =>
-      MlxNativeBindings._(LibMlxBindings(_openDynamicLibrary()));
+  factory MlxNativeBindings.open({String? libraryPath}) =>
+      MlxNativeBindings._(LibMlxBindings(_openDynamicLibrary(libraryPath)));
 
   final LibMlxBindings _bindings;
 
@@ -71,10 +71,11 @@ class MlxNativeBindingException implements Exception {
   String toString() => 'MlxNativeBindingException: $message';
 }
 
-ffi.DynamicLibrary _openDynamicLibrary() {
-  if (!Platform.isIOS) {
-    throw UnsupportedError('lib_mlx is iOS-only.');
+ffi.DynamicLibrary _openDynamicLibrary(String? libraryPath) {
+  if (!Platform.isIOS && !Platform.isMacOS) {
+    throw UnsupportedError('lib_mlx requires macOS or iOS/iPadOS.');
   }
+  if (libraryPath != null) return ffi.DynamicLibrary.open(libraryPath);
 
   try {
     return ffi.DynamicLibrary.open('lib_mlx.framework/lib_mlx');

@@ -6,7 +6,11 @@ import 'native_bindings.dart';
 import 'types.dart';
 
 class LibMlxRuntime {
-  const LibMlxRuntime();
+  const LibMlxRuntime({this.libraryPath});
+
+  /// Optional explicit dynamic library for native macOS/Dart hosts.
+  /// Flutter applications normally resolve the symbols from their process.
+  final String? libraryPath;
 
   Future<MlxModelHandle> loadModel(MlxModelConfig config) async {
     final result = await _invoke(
@@ -67,12 +71,13 @@ class LibMlxRuntime {
     String json, {
     int handle = 0,
   }) async {
-    if (!Platform.isIOS) {
-      throw UnsupportedError('lib_mlx is iOS-only.');
+    if (!Platform.isIOS && !Platform.isMacOS) {
+      throw UnsupportedError('lib_mlx requires macOS or iOS/iPadOS.');
     }
 
+    final path = libraryPath;
     final raw = await Isolate.run(() {
-      final bindings = MlxNativeBindings.open();
+      final bindings = MlxNativeBindings.open(libraryPath: path);
       return switch (call) {
         _NativeCall.loadModel => bindings.loadModel(json),
         _NativeCall.startServer => bindings.startServer(handle, json),

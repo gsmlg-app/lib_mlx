@@ -1,422 +1,153 @@
 # lib_mlx
 
-[![pub package](https://img.shields.io/pub/v/lib_mlx.svg)](https://pub.dev/packages/lib_mlx)
-[![CI](https://github.com/gsmlg-app/lib_mlx/actions/workflows/ci.yml/badge.svg)](https://github.com/gsmlg-app/lib_mlx/actions/workflows/ci.yml)
-[![End-to-End](https://github.com/gsmlg-app/lib_mlx/actions/workflows/e2e.yml/badge.svg)](https://github.com/gsmlg-app/lib_mlx/actions/workflows/e2e.yml)
-[![Tests](https://github.com/gsmlg-app/lib_mlx/actions/workflows/test.yml/badge.svg)](https://github.com/gsmlg-app/lib_mlx/actions/workflows/test.yml)
+Gemma 4 E2B text inference on Apple Silicon, with a reusable Swift core, a local OpenAI-compatible HTTP server, and a Flutter/Dart FFI lifecycle client. Production loading reads and verifies real model assets; initialization never falls back to a test backend.
 
-An iOS-only Flutter FFI management bridge for a local Swift MLX inference core and an OpenAI-compatible localhost server.
+This is the **0.2.0 development line**. It replaces the 0.1.1 stub and changes Apple integration to Swift Package Manager. See [migration](doc/migration-0.2.md) and [validation evidence](doc/validation.md) before shipping an application.
 
-This library provides a **hybrid lifecycle model** where native code manages the MLX model footprint and the local network listener via a low-level C FFI interface, while inference inputs, outputs, and Server-Sent Events (SSE) stream content are routed over a standard localhost HTTP server to bypass the performance and complexity overhead of cross-FFI binary serialization.
+## Capability boundaries
 
----
+| Capability | Implementation |
+| --- | --- |
+| Gemma 4 E2B 4-bit text | Real official MLX model, tokenizer and pinned chat template |
+| Multiple turns / system / Responses instructions | Preserved in order and passed to the model template |
+| Thinking | Template `enable_thinking`; reasoning and assistant output separated |
+| Incremental SSE / cancellation | Demand-driven backend events; network writes apply backpressure |
+| Tools / image / audio inference | Explicit `unsupported_*` errors; no discarded inputs or synthetic success |
+| macOS / iOS / iPadOS Flutter | Shared Darwin SwiftPM integration; validation status is recorded separately |
+| tvOS | Core compatibility target only; no Flutter support or separate device validation in this round |
+| Context | Configured admission budget; 128K is the model ceiling, not a device support claim |
 
-## Architecture Overview
+The internal request types retain ordered typed content, tool calls/results and call IDs, and arbitrary JSON arguments. This preserves protocol meaning even when the selected backend rejects an unsupported capability. E4B's old catalog constant is retained for source compatibility; the production loader currently accepts only the pinned E2B checkpoint.
 
-Streaming raw audio/video frames, multimodal tokens, reasoning events, and tool calls across Dart FFI requires verbose pointer serialization, custom struct alignment, and memory lifecycle tracking. This project circumvents that complexity:
+## Reproducible dependencies and assets
 
-```text
-               +------------------------------------------------------+
-               |                     iOS Device                       |
-               |                                                      |
-               |  +--------------------+      HTTP (Localhost)        |
-               |  |    Flutter App     |<==========================+  |
-               |  | (OpenAI API Client)|                           |  |
-               |  +--------------------+                           |  |
-               |         |                                         |  |
-               |         | FFI (C ABI)                             |  |
-               |         v                                         v  |
-               |  +--------------------+                      +---------+
-               |  |  @_cdecl Shim      |                      |  Swift  |
-               |  | (Lifecycle/Config) |                      | Server  |
-               |  +--------------------+                      +---------+
-               |         |                                         |  |
-               |         v                                         v  |
-               |  +-----------------------------------------------------+
-               |  |                       MlxCore                       |
-               |  |              (Resident Model Handle)                |
-               |  +-----------------------------------------------------+
-               |                                                      |
-               +------------------------------------------------------+
+The validated local toolchain is Xcode 27.1 / Swift 6.4, Flutter 3.47.8 / Dart 3.13.7. Swift tools 6.3 or newer is required by the pinned MLX dependency. Deployment targets are macOS 14 and iOS 17; iPadOS uses the iOS target. Hardware must expose a usable Metal GPU and enough available process/GPU memory. Simulator compilation is an auxiliary check and is not inference evidence.
+
+Install Xcode's Metal Toolchain component if `xcrun metal --version` is unavailable (`xcodebuild -downloadComponent MetalToolchain`). The validated compiler is Metal 32023.921 (metalfe-32023.921.6). Native MLX compilation needs this component in addition to the SDK.
+
+| Dependency | Pin |
+| --- | --- |
+| `mlx-swift` | `0.32.3` |
+| `mlx-swift-lm` | `3.32.3` |
+| `swift-transformers` tokenizer/template | `1.3.0` |
+| SwiftNIO HTTP/1 | `2.81.0` |
+| Model | `mlx-community/gemma-4-e2b-it-4bit` |
+| Revision | `238767527555cb75a05732a84dff5d6ba0dd6809` |
+| Quantization | Affine 4-bit, group size 64 |
+
+`Package.resolved` pins transitive dependencies. Both manifests are generated by `tool/package_manifests.py`; `--check` detects drift. [toolchain.json](tool/toolchain.json) and [model-lock.json](tool/model-lock.json) record the selected versions and every model asset's exact size/hash. The backend uses the official text model's weight sanitation; audio and vision towers are not executed. No VincentGourbin dependency is needed for this text-only implementation.
+
+Recover assets outside Git (approximately 3.6 GB, with additional build/cache space required):
+
+```sh
+python3 tool/fetch_model.py build/models/gemma-4-e2b
+python3 tool/fetch_model.py build/models/gemma-4-e2b --verify-only
 ```
 
-### Key Pillars
-- **FFI for Lifecycle Management**: FFI calls load and unload model weights into memory, start/stop the localhost server, and poll status using simple, structured JSON-in/JSON-out messages.
-- **HTTP for Inference Routing**: The actual inference path is HTTP-only. Structured OpenAI payloads (Chat Completions and Response families) flow through localhost sockets, letting the client easily read standard SSE streams and consume multipart media chunks.
-- **Reasoning Separation**: Reasoning tokens are kept separate from assistant content in the native `MlxCore` layer and the SSE streams.
-- **Multimodal Preparedness**: Audio/image input arrays bypass FFI entirely, sent as standard multipart payloads to the local server.
+The fetcher resumes partial downloads and verifies LFS SHA-256 or Git blob hashes before atomic installation. The loader independently verifies the pinned files before reading weights/tokenizer/configuration, validates the Gemma structure, performs initialization, and only then returns `ready`. Missing files, corrupt weights, incompatible models, unavailable Metal and insufficient budgets are diagnostic failures. Model files and download credentials must never be committed. Observe the model's published license and usage terms.
 
----
+## Flutter integration
 
-## Directory Layout
-
-```text
-ios/FlutterFramework/          Stub FlutterFramework package for direct SwiftPM builds
-ios/lib_mlx/Sources/MlxCore/   Structured native inference types and stub core
-ios/lib_mlx/Sources/MlxServer/ Standalone Swift localhost OpenAI server (using NWListener)
-ios/lib_mlx/Sources/lib_mlx/   @_cdecl C lifecycle shim and SwiftPM plugin target
-lib/                           Dart management APIs and the thin OpenAI HTTP client
-example/                       iOS runtime Flutter harness app for validation
-src/lib_mlx.h                  The ffigen input header describing the lifecycle ABI
-Package.swift                  The root SwiftPM package configuration mirroring targets
+```sh
+flutter config --enable-swift-package-manager
+flutter pub add lib_mlx
 ```
 
-*Note: The Swift package under `ios/lib_mlx` is the Flutter SwiftPM plugin package and can be built directly with `swift build`. The committed `ios/FlutterFramework` package is only a source-checkout stub; Flutter app builds provide their generated FlutterFramework package. The root `Package.swift` mirrors the exact same target definitions to allow host-side macOS debugging and tests (`swift test`) without running Xcode.*
-
----
-
-## Native C API (FFI Lifecycle ABI)
-
-The native interface is defined in [src/lib_mlx.h](src/lib_mlx.h). All methods return dynamically allocated JSON strings that must be freed using `lib_mlx_free`.
-
-### 1. `lib_mlx_load_model`
-Loads a local MLX model directory.
-- **Signature**: `char *lib_mlx_load_model(const char *config_json)`
-- **Request JSON Schema**:
-  ```json
-  {
-    "model_path": "/var/mobile/.../gemma-4-e2b-it-4bit",
-    "model_id": "mlx-community/gemma-4-e2b-it-4bit", // Optional
-    "revision": null, // Optional string
-    "thinking_enabled": true, // Optional (defaults to true)
-    "lazy_encoders": true // Optional (defaults to true)
-  }
-  ```
-- **Response JSON Schema**:
-  ```json
-  {
-    "ok": true,
-    "handle": 1,
-    "status": "ready",
-    "model_id": "mlx-community/gemma-4-e2b-it-4bit"
-  }
-  ```
-
-### 2. `lib_mlx_start_server`
-Starts the local OpenAI-compatible HTTP server bound to the specified model handle.
-- **Signature**: `char *lib_mlx_start_server(int64_t handle, const char *config_json)`
-- **Request JSON Schema**:
-  ```json
-  {
-    "host": "127.0.0.1", // Defaults to "127.0.0.1"
-    "port": 0,           // Port to bind. Use 0 for dynamic allocation.
-    "model_id": "mlx-community/gemma-4-e2b-it-4bit",
-    "queue_limit": 1
-  }
-  ```
-- **Response JSON Schema**:
-  ```json
-  {
-    "ok": true,
-    "handle": 1,
-    "server": {
-      "host": "127.0.0.1",
-      "port": 58291,
-      "base_url": "http://127.0.0.1:58291",
-      "model_id": "mlx-community/gemma-4-e2b-it-4bit",
-      "status": "running"
-    }
-  }
-  ```
-
-### 3. `lib_mlx_stop_server`
-Stops the server bound to the specified model handle.
-- **Signature**: `char *lib_mlx_stop_server(int64_t handle)`
-- **Response JSON Schema**:
-  ```json
-  { "ok": true, "handle": 1, "status": "stopped" }
-  ```
-
-### 4. `lib_mlx_server_status`
-Returns status info about the model and server.
-- **Signature**: `char *lib_mlx_server_status(int64_t handle)`
-- **Response JSON Schema**:
-  ```json
-  {
-    "ok": true,
-    "handle": 1,
-    "model": {
-      "status": "ready",
-      "model_id": "mlx-community/gemma-4-e2b-it-4bit",
-      "model_path": "/var/mobile/.../gemma-4-e2b-it-4bit"
-    },
-    "server": {
-      "status": "running" // Or "stopped"
-    }
-  }
-  ```
-
-### 5. `lib_mlx_unload_model`
-Stops the server if running and unloads the loaded model.
-- **Signature**: `char *lib_mlx_unload_model(int64_t handle)`
-- **Response JSON Schema**:
-  ```json
-  { "ok": true, "handle": 1, "status": "unloaded" }
-  ```
-
-### 6. `lib_mlx_free`
-Frees a string pointer allocated by the native runtime.
-- **Signature**: `void lib_mlx_free(void *ptr)`
-
----
-
-## Dart API Reference
-
-Dart wrappers are placed under the [lib/src/](lib/src/) directory.
-
-### Lifecyle Management (`LibMlxRuntime`)
-`LibMlxRuntime` wraps the low-level FFI bindings, managing handles and running C calls within Dart `Isolates` to prevent main-thread blockage:
+CocoaPods is not a supported consumption path in 0.2. The broken single-module podspec has been removed. The source package includes the real MLX C++/Metal target, resources and Swift dependencies through SwiftPM; there is no supported upstream CocoaPods distribution or bundled XCFramework here. See the concrete dependency/module evidence in the migration guide. A CocoaPods-only host must migrate before upgrading.
 
 ```dart
 import 'package:lib_mlx/lib_mlx.dart';
 
-final runtime = LibMlxRuntime();
-const model = MlxAvailableModel.gemma4E2b;
-
-print(model.huggingFaceModelPageUrl); // https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit
-
-// 1. Load Model
-final handle = await runtime.loadModel(
-  MlxModelConfig.forAvailableModel(
-    modelPath: '/path/to/gemma-4-e2b-it-4bit',
-    model: model,
-    thinkingEnabled: true,
-  ),
-);
-
-// 2. Start HTTP Server
-final serverInfo = await runtime.startServer(
-  handle,
-  config: const MlxServerConfig(port: 8080), // Use port 0 for random selection
-);
-print('Server running on ${serverInfo.baseUrl}');
-
-// 3. Check status
-final status = await runtime.serverStatus(handle);
-print('Model status: ${status.modelStatus}, Server status: ${status.serverStatus}');
-
-// 4. Unload model & stop server
-await runtime.unloadModel(handle);
+const runtime = LibMlxRuntime();
+final handle = await runtime.loadModel(MlxModelConfig(
+  modelPath: '/absolute/path/to/gemma-4-e2b',
+  revision: MlxAvailableModel.pinnedE2bRevision,
+  contextLength: 4096,
+  prefillStepSize: 256,
+));
+final server = await runtime.startServer(handle);
+final client = LibMlxOpenAiClient(baseUri: server.uri);
+try {
+  await for (final event in client.chatCompletionsStream({
+    'model': handle.modelId,
+    'thinking': false,
+    'max_tokens': 128,
+    'temperature': 0.0,
+    'messages': [
+      {'role': 'system', 'content': 'Answer briefly.'},
+      {'role': 'user', 'content': '你好！'},
+    ],
+  })) {
+    // Standard OpenAI-shaped delta fields, with reasoning_content kept separate.
+    print(event.data);
+  }
+} finally {
+  client.close(force: true);
+  await runtime.unloadModel(handle);
+}
 ```
 
-### Supported Models
-Only these model aliases are currently exposed:
+Cancelling the stream subscription closes that request's connection and cancels queued/active inference. Keep a stream subscription if the UI needs an explicit cancel button. A single production model may reside in each process; unload it before loading another. FFI calls run outside the Dart UI isolate. Native Swift hosts can import `MlxCore`/`MlxServer` directly and call `MlxResidentModel.load`, the asynchronous event sink, and `shutdown` without Flutter.
 
-| Alias | Hugging Face model |
+The service binds **only** `127.0.0.1` or `::1`; `localhost` resolves explicitly to `127.0.0.1`. Other bind addresses are rejected. Loopback restricts network exposure but is not authentication against other local processes. `startServer` returns the actual bound host, ephemeral port and base URL. Repeated starts on a running handle return its existing server; stop before changing configuration. The default model ID is the resident model's ID; an explicit `modelId` is a service alias, separately identified by `resident_model_id`. Requests select the advertised service ID.
+
+## Request contract and limits
+
+Endpoints: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`. Both generation endpoints support JSON and SSE. Supported generation controls are positive `max_tokens` / `max_output_tokens`, `temperature` 0...2, `top_p` (0,1], nonnegative `top_k`, `seed`, and `thinking` boolean. Unsupported generation fields and malformed parameters are rejected, rather than silently ignored. Inspect `OpenAIRequest.swift` for the precise accepted protocol fields.
+
+Responses `input` can be text or ordered messages. `instructions` is preserved as a leading system instruction. Tool/function input items, associated IDs and typed arguments survive conversion, then receive an unsupported error from this text backend. Images/audio are also rejected explicitly. User text is not silently extracted from a multimodal input to produce a misleading success.
+
+`queueLimit` means **waiting requests excluding the single active generation**. Zero permits no waiting requests. Queue overflow returns 429; queued cancellation removes its slot. Cancellation and unload await actual backend teardown before allowing model resources to be reused. A generation has one terminal outcome; errors never emit successful completion.
+
+The server uses SwiftNIO's established HTTP/1 parser instead of a custom framing parser. NIO supports the required Apple platforms and handles split Content-Length/chunked framing. Initial headers, trailers, body length, conflicting/invalid framing, incomplete requests and read/write deadlines are bounded. Defaults:
+
+| Setting | Default |
 | --- | --- |
-| `gemma-4-e4b` | `mlx-community/gemma-4-e4b-it-4bit` |
-| `gemma-4-e2b` | `mlx-community/gemma-4-e2b-it-4bit` |
+| `maxHeaderBytes` | 32 KiB |
+| `maxBodyBytes` | 64 MiB (configurable for legitimate long prompts) |
+| `headerTimeoutSeconds` | 10 |
+| `requestTimeoutSeconds` | 120 (body reception, not inference) |
+| `writeTimeoutSeconds` | 30 |
+| `maxConnections` | 64 |
 
-### OpenAI Client (`LibMlxOpenAiClient`)
-The client establishes a connection to the local HTTP server. It supports both standard HTTP JSON requests and Server-Sent Events (SSE) streams:
+The Dart client sets the UTF-8 **byte** content length for JSON and SSE POSTs, validates SSE Content-Type, reports JSON/backend errors, and rejects EOF before the endpoint terminal event. Streaming does not collect the entire output. Backend events await bounded socket writes; a slow client stalls generation or times out without dropping deltas. Nonstreaming replies necessarily accumulate output, with a separate bound.
 
-```dart
-final client = LibMlxOpenAiClient(baseUri: serverInfo.uri);
+## Context, memory and app lifecycle
 
-// List Models
-final models = await client.listModels();
+`contextLength` is distinct from the request's maximum output tokens. The real tokenizer applies the pinned template first; admission requires `input tokens + reserved output <= contextLength <= 131072`. Oversize input is rejected; system instructions/history/tool messages are never silently truncated. Prefill is chunked (256 tokens by default) and checks cancellation between chunks.
 
-// Chat Completions (REST response)
-final response = await client.chatCompletions({
-  'model': serverInfo.modelId,
-  'messages': [
-    {'role': 'user', 'content': 'Is the capital of France Paris? Answer Yes or No.'}
-  ],
-  'temperature': 0.0,
-});
-print(response['choices'][0]['message']['content']); // "Yes"
+KV caches belong to one request and are destroyed when it finishes. There is **no cross-request prefix reuse, persistence, KV quantization or compression claim**. Independent histories therefore cannot reuse stale KV. The loaded weights outlive individual sessions. Allocator cache is separately bounded (`cacheLimitBytes`, default 64 MiB); a process-wide lease prevents independent Swift hosts from racing global MLX limits and random state. An optional `memoryLimitBytes` imposes an additional budget; setting a large number cannot create physical memory or an entitlement allowance.
 
-// Chat Completions (SSE Stream)
-final stream = client.chatCompletionsStream({
-  'model': serverInfo.modelId,
-  'messages': [
-    {'role': 'user', 'content': 'Describe Paris in 50 words.'}
-  ]
-});
+Status metrics include process physical footprint, MLX active/cache/peak bytes; these overlap and must not be summed as process memory. Usage contains actual template input/output token counts and a local `timings` extension with `prefill_seconds` and `generation_seconds`. Reasoning tokens are counted from generated token events. Device acceptance proceeds at 4K, 8K, then 16K; larger windows remain unverified unless a named device/configuration passes the same checks.
 
-await for (final event in stream) {
-  if (event.done) break;
-  // Read chunk delta contents
-  final choice = event.data?['choices']?[0] as Map?;
-  final delta = choice?['delta'] as Map?;
-  if (delta != null) {
-    if (delta.containsKey('reasoning_content')) {
-      print('[Thinking] ${delta['reasoning_content']}');
-    }
-    if (delta.containsKey('content')) {
-      print('[Content] ${delta['content']}');
-    }
-  }
-}
-```
+Memory warnings on iOS and warning/critical memory-pressure events on macOS stop admission, cancel/drain requests and release allocator/request caches. On iOS, resigning active also suspends generation and stops the listener; foreground resume restores model admission, and the host explicitly restarts its server. Weights stay resident until unload. Native hosts have equivalent `handleMemoryPressure`, `resume` and `shutdown` calls. This implementation provides foreground inference. A listener does not grant background Metal execution; no background inference capability is declared.
 
----
+For iOS Release, the example requests the ordinary increased-memory-limit entitlement. Availability depends on device and provisioning; it does not guarantee that a 4 GB iPhone can hold this model. The Debug file is separate. The debugging-only entitlement `com.apple.developer.kernel.increased-debugging-memory-limit` is **not** in Release (or required by this example). Enable it only for a debugger-specific experiment, never as deployment evidence. macOS sandbox hosts need network client/server entitlements and an authorized model location inside their container or a security-scoped user-selected location.
 
-## Local Server Endpoint Specs
+## Verification entry points
 
-The localhost server (`LocalOpenAIServer.swift`) exposes the following endpoints:
-
-### 1. `GET /v1/models`
-Returns list of models currently loaded.
-```json
-{
-  "object": "list",
-  "data": [
-    {
-      "id": "mlx-community/gemma-4-e2b-it-4bit",
-      "object": "model",
-      "created": 1717320000,
-      "owned_by": "local"
-    }
-  ]
-}
-```
-
-### 2. `POST /v1/chat/completions`
-Generates text completions matching the OpenAI specification.
-- **Request Properties**:
-  - `model`: Target model ID string.
-  - `messages`: List of message objects.
-  - `temperature`: Temperature double.
-  - `max_tokens` / `max_output_tokens`: Max number of generated tokens.
-  - `thinking`: Boolean flag to toggle reasoning-content output.
-  - `stream`: Set `true` to request SSE chunk streaming.
-  - `tools`: Structured tool definitions.
-- **Response Format (Non-streaming)**:
-  ```json
-  {
-    "id": "chatcmpl_xxxx",
-    "object": "chat.completion",
-    "created": 1717320000,
-    "model": "mlx-community/gemma-4-e2b-it-4bit",
-    "choices": [{
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Paris",
-        "reasoning_content": "The user is asking for the capital..." // Optional
-      },
-      "finish_reason": "stop"
-    }],
-    "usage": {
-      "input_tokens": 0,
-      "output_tokens": 12,
-      "output_tokens_details": { "reasoning_tokens": 8 },
-      "total_tokens": 12
-    }
-  }
-  ```
-
-### 3. `POST /v1/responses`
-Implements streaming using the OpenAI Responses lifecycle spec. The SSE streaming format (`stream: true`) publishes the following sequence of typed events, each including a `sequence_number`:
-1. `response.created`: Initial response object state showing status `"in_progress"`.
-2. `response.output_item.added`: Triggered when an output chunk (such as message or tool calls) begins.
-3. `response.reasoning_text.delta` & `done`: Streaming and finalization of reasoning tokens.
-4. `response.content_part.added`: Triggers when an output text part starts.
-5. `response.output_text.delta` & `done`: Streaming and finalization of text content.
-6. `response.content_part.done`: Text part emission complete.
-7. `response.function_call_arguments.delta` & `done`: Emits structured JSON arguments for requested tool calls.
-8. `response.output_item.done`: Marks compilation of the message or tool call.
-9. `response.completed`: Terminal event containing the complete, final `Response` payload.
-
----
-
-## Build, Run & Verification
-
-### Prerequisites
-- macOS host running Swift 5.9+ / Xcode 15+
-- Flutter SDK configured for iOS development
-
-### iOS Host App Configuration
-
-Set the minimum iOS version in your app's `ios/Podfile`:
-```ruby
-platform :ios, '17.0'
-```
-
-Use static framework linkage in `ios/Podfile`:
-```ruby
-use_frameworks! :linkage => :static
-```
-
-Enable file sharing in `ios/Runner/Info.plist` if the app needs users to import or inspect local model files:
-```xml
-<key>UIFileSharingEnabled</key>
-<true/>
-```
-
-Add a local network access description in `ios/Runner/Info.plist` for development builds that expose or discover local inference services:
-```xml
-<key>NSLocalNetworkUsageDescription</key>
-<string>This app requires local network access for model inference services.</string>
-```
-
-Optionally disable the minimum frame duration limit in `ios/Runner/Info.plist` for smoother high-refresh-rate UI:
-```xml
-<key>CADisableMinimumFrameDurationOnPhone</key>
-<true/>
-```
-
-For large on-device models, add memory entitlements in `ios/Runner/Runner.entitlements`:
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>com.apple.developer.kernel.extended-virtual-addressing</key>
-  <true/>
-  <key>com.apple.developer.kernel.increased-memory-limit</key>
-  <true/>
-  <key>com.apple.developer.kernel.increased-debugging-memory-limit</key>
-  <true/>
-</dict>
-</plist>
-```
-
-No host-side `Podfile` `post_install` hook is required for `lib_mlx`; the package's iOS Swift package and podspec already declare the required iOS platform and native library layout.
-
-### Commands
-
-**1. Re-Generate Dart FFI Bindings**
-If you modify `src/lib_mlx.h`, update the Dart bindings:
-```bash
-dart run ffigen --config ffigen.yaml
-```
-
-**2. Verify Host Native Code**
-Run SwiftPM tests directly on macOS (without running Xcode or iOS Simulator):
-```bash
-swift build
+```sh
+flutter pub get
+flutter analyze .
+flutter test test
+python3 tool/package_manifests.py --check
 swift test
-(cd ios/lib_mlx && swift build)
-```
-
-**3. Run Dart Unit Tests**
-Verify JSON payload encoding/decoding and SSE stream parsing on the host:
-```bash
-flutter test
-```
-
-**4. Run Example Mobile App**
-To run the testing harness on an iOS simulator or physical device:
-```bash
+swift build --product ProtocolTestHost
+LIB_MLX_PROTOCOL_HOST="$PWD/.build/debug/ProtocolTestHost" \
+  flutter test test/swift_protocol_integration_test.dart
+swift build -c release --product MlxRuntimeFFI
+dart run tool/abi_smoke.dart .build/release/libMlxRuntimeFFI.dylib
+LIB_MLX_TEST_MODEL_PATH="$PWD/build/models/gemma-4-e2b" swift test --filter MlxCoreTests
+dart run tool/runtime_smoke.dart build/models/gemma-4-e2b \
+  .build/release/libMlxRuntimeFFI.dylib 4096
 cd example
-flutter config --enable-swift-package-manager
-flutter run
+flutter build macos --release -t lib/smoke.dart \
+  --dart-define=LIB_MLX_MODEL_PATH=/authorized/model/path
+flutter build ios --release -t lib/smoke.dart
+# Auxiliary SDK compilation only:
+flutter build ios --simulator --debug
 ```
 
----
+The example's `lib/smoke.dart` runs the full public chain without a mock, saves `Documents/lib_mlx-smoke-report.json` in the app container on both platforms and prints `LIB_MLX_SMOKE_RESULT`. Copy verified assets to the installed app's `Documents/gemma-4-e2b` using `devicectl device copy to`. `tool/device_smoke.sh` provides the build/install/asset-copy/launch/report procedure. Use the actual device UDID. Ordinary `swift build` always builds for the host; running it inside a directory named `ios` does not build iOS.
 
-## Phase 0 Development Status & Decisions
-
-This repository currently hosts the **Phase 0B/0C host-side scaffold**. It uses a mock native core and custom TCP listener so translation, JSON schemas, SSE stream builders, and Dart layers can be fully validated on a macOS host.
-
-### Remaining Phase 0A Tasks (On-Device Verification)
-Device validation requires a physical Apple Silicon device (iPhone 15 Pro, A17 Pro, or Apple Silicon iPad) and the local model binary to confirm:
-1. **Dynamic Memory Bounds**: Confirming model weights load inside iOS runtime sandboxes with appropriate memory entitlements.
-2. **Vision/Audio Preprocessing**: Integrating image/audio sample buffers into raw token feeds.
-3. **Turn-Stripping Logic**: Stripping prior-turn `<thinking>` tags before constructing the next prompt token buffer.
-
-### Key Architecture Decisions
-- **MLX Swift Dependency Vendoring**: Mainline `mlx-swift-lm` is expected to lack Gemma 4 audio support. VincentGourbin's `gemma-4-swift-mlx` fork is the current baseline target.
-- **Swift HTTP Framework**: The server currently uses a lightweight wrapper over `NWListener`. Before replacing the stubs, final alignment is required on whether to keep `NWListener` or move to a structured framework like `Hummingbird` or `Vapor` depending on binary footprint constraints.
+CI separates Dart checks, controlled protocol tests, Release ABI verification and Flutter SDK builds. Manual self-hosted model/device jobs require real assets/Apple hardware. Release/publish workflows require successful **Release Flutter public-chain reports on macOS and iOS/iPadOS**, not mock or simulator results. [validation.md](doc/validation.md) records what actually ran, including environmental blockers and remaining work.

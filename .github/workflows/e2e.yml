@@ -1,69 +1,190 @@
-name: End-to-End
+name: Real-model Flutter Release evidence
 
 on:
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      run_macos:
+        description: Run signed standalone macOS Flutter Release smoke
+        type: boolean
+        default: true
+      run_ios:
+        description: Run signed standalone physical iOS Flutter Release smoke
+        type: boolean
+        default: false
+      model_path:
+        description: Existing verified pinned E2B snapshot path on the self-hosted runner
+        type: string
+        required: true
+      device_udid:
+        description: Exact unlocked and trusted iOS device UDID (required for iOS)
+        type: string
+      context_length:
+        description: Device context budget
+        type: string
+        default: '4096'
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: real-model-release-evidence
+  cancel-in-progress: false
 
 env:
-  FLUTTER_VERSION: '3.44.0'
+  FLUTTER_VERSION: '3.47.8'
+  FLUTTER_SWIFT_PACKAGE_MANAGER: 'true'
 
 jobs:
-  runtime-smoke:
-    name: Runtime and iOS package smoke
-    runs-on: macos-15
+  macos:
+    if: ${{ inputs.run_macos }}
+    name: Real model in signed standalone macOS Flutter Release
+    runs-on: [self-hosted, macOS, ARM64, lib-mlx-model]
     timeout-minutes: 60
-
+    env:
+      MODEL_PATH: ${{ inputs.model_path }}
+      CONTEXT_LENGTH: ${{ inputs.context_length }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
-
-      - name: Enable Swift Package Manager
-        run: flutter config --enable-swift-package-manager
-
-      - name: Cache pub dependencies
-        uses: actions/cache@v4
+      - name: Build and launch signed Release Flutter host without debugger
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tool/package_manifests.py --check
+          swift --version | python3 -c 'import re,sys; v=re.search(r"Swift version (\d+)\.(\d+)",sys.stdin.read()); sys.exit(0 if v and tuple(map(int,v.groups())) >= (6,3) else "Swift 6.3+ is required")'
+          verify_model() {
+            PYTHONDONTWRITEBYTECODE=1 python3 - "$1" <<'PY'
+          import importlib.util
+          import json
+          from pathlib import Path
+          import sys
+          spec = importlib.util.spec_from_file_location('fetch_model', 'tool/fetch_model.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          model = Path(sys.argv[1])
+          lock = json.loads(Path('tool/model-lock.json').read_text())
+          for entry in lock['files']:
+              if not module.verify(model / entry['path'], entry):
+                  raise SystemExit(f"Missing or corrupt model asset: {model / entry['path']}")
+          if json.loads((model / 'lib_mlx-model.json').read_text()) != lock:
+              raise SystemExit('Model manifest differs from the pinned lock')
+          PY
+          }
+          verify_model "$MODEL_PATH"
+          container_documents="$HOME/Library/Containers/app.gsmlg.libMlxExample/Data/Documents"
+          destination="$container_documents/gemma-4-e2b"
+          if [[ -e "$destination" ]]; then
+            verify_model "$destination"
+          else
+            mkdir -p "$container_documents"
+            # Clone into this new task destination on APFS; merge only if cloning is unavailable.
+            if ! cp -cR "$MODEL_PATH" "$destination"; then
+              mkdir -p "$destination"
+              rsync -a "$MODEL_PATH/" "$destination/"
+            fi
+            verify_model "$destination"
+          fi
+          source_digest="$(python3 tool/release_gate.py --source-digest)"
+          run_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-macos"
+          flutter pub get
+          (
+            cd example
+            flutter pub get
+            flutter build macos --release --target lib/smoke.dart \
+              "--dart-define=LIB_MLX_CONTEXT_LENGTH=$CONTEXT_LENGTH" \
+              "--dart-define=LIB_MLX_SOURCE_DIGEST=$source_digest" \
+              "--dart-define=LIB_MLX_SMOKE_RUN_ID=$run_id"
+          )
+          app="$GITHUB_WORKSPACE/example/build/macos/Build/Products/Release/lib_mlx_example.app"
+          test -d "$app"
+          mkdir -p build/release-evidence
+          codesign --verify --deep --strict "$app"
+          codesign --display --verbose=4 "$app" 2> build/release-evidence/macos-signing.txt
+          test "$(python3 tool/release_gate.py --source-digest)" = "$source_digest"
+          open -n "$app"
+          report="$container_documents/lib_mlx-smoke-report.json"
+          deadline=$((SECONDS + 1200))
+          while (( SECONDS < deadline )); do
+            if python3 - "$report" build/release-evidence/macos-report.json "$run_id" "$source_digest" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          try:
+              report = json.loads(Path(sys.argv[1]).read_text())
+          except (OSError, ValueError):
+              raise SystemExit(2)
+          if not isinstance(report, dict) or report.get('run_id') != sys.argv[3] or report.get('source_digest') != sys.argv[4]:
+              raise SystemExit(2)
+          signing = Path('build/release-evidence/macos-signing.txt').read_text()
+          report.update(signed=True, standalone_launch=True,
+                        signing_kind='adhoc' if 'Signature=adhoc' in signing else 'identity')
+          Path(sys.argv[2]).write_text(json.dumps(report, indent=2) + '\n')
+          PY
+            then
+              python3 tool/release_gate.py --platform macos --run-id "$run_id" build/release-evidence/macos-report.json
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'No fresh macOS smoke report within 1200 seconds' >&2
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
+          name: flutter-release-macos-report
+          path: build/release-evidence/macos-*
+          if-no-files-found: warn
+          retention-days: 30
+
+  ios:
+    if: ${{ inputs.run_ios }}
+    name: Real model in signed standalone physical iOS Flutter Release
+    runs-on: [self-hosted, macOS, ARM64, lib-mlx-ios-device]
+    timeout-minutes: 90
+    env:
+      MODEL_PATH: ${{ inputs.model_path }}
+      DEVICE_UDID: ${{ inputs.device_udid }}
+      CONTEXT_LENGTH: ${{ inputs.context_length }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Run installed signed Release app independently on the exact device
+        run: |
+          test -n "$DEVICE_UDID" || { echo 'device_udid is required for physical iOS smoke' >&2; exit 1; }
+          tool/device_smoke.sh "$DEVICE_UDID" "$MODEL_PATH" "$CONTEXT_LENGTH"
+          mkdir -p build/release-evidence
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          reports = sorted(Path('build/device-smoke').glob('*/report.json'), key=lambda path: path.stat().st_mtime_ns)
+          if not reports:
+              raise SystemExit('No device smoke report was produced')
+          shutil.copyfile(reports[-1], 'build/release-evidence/ios-report.json')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flutter-release-ios-report
+          path: build/release-evidence/ios-report.json
+          if-no-files-found: warn
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-device-smoke-logs
           path: |
-            ~/.pub-cache
-            .dart_tool
-            example/.dart_tool
-          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pub-
-
-      - name: Install package dependencies
-        run: flutter pub get
-
-      - name: Run OpenAI server E2E tests
-        run: swift test --filter LocalOpenAIServerTests
-
-      - name: Build iOS SwiftPM package
-        working-directory: ios/lib_mlx
-        run: swift build
-
-      - name: Install example dependencies
-        working-directory: example
-        run: flutter pub get
-
-      - name: Build iOS simulator example
-        working-directory: example
-        run: flutter build ios --simulator --debug
+            build/device-smoke/**/run.log
+            build/device-smoke/**/signing.txt
+            build/device-smoke/**/launch.json
+            build/device-smoke/**/report.json
+            build/device-smoke/**/poll.log
+          if-no-files-found: warn
+          retention-days: 14

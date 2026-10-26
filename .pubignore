@@ -1,0 +1,12 @@
+.build/
+.dart_tool/
+build/
+.git/
+**/.build/
+**/.dart_tool/
+**/build/
+**/ephemeral/
+**/Pods/
+**/xcuserdata/
+**/.DS_Store
+**/.swiftpm/

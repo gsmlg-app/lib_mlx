@@ -1,6 +1,6 @@
 name: lib_mlx
-description: iOS-only Flutter FFI management bridge for a local MLX OpenAI server.
-version: 0.1.1
+description: Apple Silicon MLX model lifecycle and local OpenAI inference for macOS and iOS Flutter applications.
+version: 0.2.0-dev.1
 repository: https://github.com/gsmlg-app/lib_mlx
 
 environment:
@@ -39,6 +39,10 @@ flutter:
     platforms:
       ios:
         ffiPlugin: true
+        sharedDarwinSource: true
+      macos:
+        ffiPlugin: true
+        sharedDarwinSource: true
 
   # To add assets to your plugin package, add an assets section, like this:
   # assets:

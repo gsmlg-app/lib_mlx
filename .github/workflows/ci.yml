@@ -12,106 +12,74 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FLUTTER_VERSION: '3.44.0'
+  FLUTTER_VERSION: '3.47.8'
+  FLUTTER_SWIFT_PACKAGE_MANAGER: 'true'
 
 jobs:
-  dart-static-checks:
-    name: Dart format, analyze, and package validation
+  dart:
+    name: Dart format, analysis, tests, and package validation
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Cache pub dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.pub-cache
-            .dart_tool
-          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pub-
-
-      - name: Install Dart and Flutter dependencies
-        run: flutter pub get
-
-      - name: Check formatting
-        run: dart format --set-exit-if-changed .
-
-      - name: Analyze
-        run: flutter analyze .
-
-      - name: Validate pub package
-        run: flutter pub publish --dry-run --ignore-warnings
-
-  swift-build:
-    name: Swift package build
-    runs-on: macos-15
     timeout-minutes: 20
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app
-
-      - name: Build Swift package
-        run: swift build
-
-      - name: Build iOS SwiftPM package
-        working-directory: ios/lib_mlx
-        run: swift build
-
-  ios-example-build:
-    name: iOS example build
-    runs-on: macos-15
-    timeout-minutes: 45
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed .
+      - run: flutter analyze .
+      - run: flutter test test
+      - run: python3 tool/package_manifests.py --check
+      - run: python3 -m unittest -v tool.test_release_gate
+      - run: flutter pub publish --dry-run
 
-      - name: Enable Swift Package Manager
-        run: flutter config --enable-swift-package-manager
-
-      - name: Cache pub dependencies
-        uses: actions/cache@v4
+  apple:
+    name: Swift protocol, Release ABI, and Flutter Release compilation
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify hosted toolchain (Swift 6.3 or newer)
+        run: |
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          swift --version
+          swift --version | python3 -c 'import re,sys; v=re.search(r"Swift version (\d+)\.(\d+)",sys.stdin.read()); sys.exit(0 if v and tuple(map(int,v.groups())) >= (6,3) else "Swift 6.3+ is required")'
+      - uses: subosito/flutter-action@v2
         with:
-          path: |
-            ~/.pub-cache
-            .dart_tool
-            example/.dart_tool
-          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pub-
-
-      - name: Install package dependencies
-        run: flutter pub get
-
-      - name: Install example dependencies
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: python3 tool/package_manifests.py --check
+      - name: Controlled Swift protocol and lifecycle tests
+        run: swift test --jobs 2
+      - name: Preserve JSON integer boundaries
+        run: |
+          swiftc darwin/lib_mlx/Sources/MlxCore/CoreTypes.swift tool/json_value_smoke.swift -o "$RUNNER_TEMP/json-value-smoke"
+          "$RUNNER_TEMP/json-value-smoke"
+      - run: flutter pub get
+      - name: Release FFI ABI through public Dart bindings
+        run: |
+          swift build --jobs 2 -c release --product MlxRuntimeFFI
+          dart run tool/abi_smoke.dart .build/release/libMlxRuntimeFFI.dylib
+      - name: Public Dart client to controlled Swift protocol host
+        run: |
+          swift build --jobs 2 --product ProtocolTestHost
+          LIB_MLX_PROTOCOL_HOST="$GITHUB_WORKSPACE/.build/debug/ProtocolTestHost" flutter test test/swift_protocol_integration_test.dart
+      - name: Resolve Flutter example
         working-directory: example
         run: flutter pub get
-
-      - name: Build iOS simulator example
+      - name: Prepare unsigned hosted compilation settings
+        run: printf 'CODE_SIGNING_ALLOWED = NO\nCODE_SIGNING_REQUIRED = NO\nCODE_SIGN_IDENTITY = -\nCODE_SIGN_STYLE = Manual\nDEVELOPMENT_TEAM =\nEXCLUDED_ARCHS = x86_64\n' > "$RUNNER_TEMP/lib-mlx-unsigned.xcconfig"
+      - name: Compile unsigned Flutter macOS Release (no runtime evidence)
+        env:
+          XCODE_XCCONFIG_FILE: ${{ runner.temp }}/lib-mlx-unsigned.xcconfig
         working-directory: example
-        run: flutter build ios --simulator --debug
+        run: flutter build macos --release
+      - name: Compile Flutter iOS device SDK Release, unsigned (no device evidence)
+        working-directory: example
+        run: flutter build ios --release --no-codesign
