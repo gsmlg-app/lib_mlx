@@ -49,7 +49,7 @@
 | P2-1 | 有序角色/内容、instructions、thinking 历史、tool call/result/ID 保留 | 纯转换与 Dart→Swift 深层 JSON 测试；生产不支持的类型明确拒绝 |
 | P2-2 | 递归 JSON 值替代 String 字典 | 数字、布尔、null、数组、嵌套对象及调用 ID 测试 |
 | P2-3 | 默认服务身份来自 resident model，别名单独标记并校验；执行温度/top-p/top-k/seed/token 上限 | 真实 tokenizer usage，真实模板输出，非法及未支持参数拒绝测试；timings 为本地扩展 |
-| P2-4 | 上下文、prefill、独立 KV、设备预算和压力策略已实现；重复加载的资源恢复尚未通过 | 4K→8K→16K Mac 实际输入及核心 pressure/drain 测试通过；发现上游每次加载残留 4,464 B，具体阻断见下文；真机系统通知路径未验证 |
+| P2-4 | 上下文、prefill、独立 KV、设备预算和压力策略已实现；资产校验缓冲按块释放；重复加载的资源恢复尚未通过 | 4K→8K→16K Mac 实际输入及核心 pressure/drain 测试通过；iPhone 已实测内存警告取消及修复后的预算拒绝；上游每次加载残留 4,464 B 仍阻断资源验收；前后台真机验收未完成 |
 | P2-5 | Debug/Release entitlements 分文件；不含 debugging-only memory entitlement；更新真实依赖工具链 | 配置与 Release 签名检查；设备运行不能由 entitlement 文件本身推定 |
 
 ## 已执行的测试
@@ -58,9 +58,9 @@
 
 | 命令 | 结果 |
 | --- | --- |
-| `swift test --jobs 2` | 最终 47 项，46 通过、1 项真模型测试因未设环境变量跳过；0 失败。`build/swift-tests-completion.log` |
-| `LIB_MLX_TEST_MODEL_PATH="$PWD/build/models/gemma-4-e2b" swift test --skip-build --filter MlxRealModelTests` | 真实权重测试单独执行 1 项通过；`build/swift-real-model-completion.log`。此前核心/运行时联合 20 项也通过 |
-| `LIB_MLX_PROTOCOL_HOST="$PWD/.build/debug/ProtocolTestHost" flutter test test` | 最终 13 项通过；`build/dart-with-swift-completion.log` |
+| `swift test --scratch-path example/build/macos/SourcePackages --skip-update --jobs 2` | 最新 51 项，49 通过、2 项真实资产/模型测试因未设环境变量跳过；0 失败。`build/swift-tests-asset-fix.log` |
+| `LIB_MLX_TEST_MODEL_PATH="$PWD/build/models/gemma-4-e2b" swift test --scratch-path example/build/macos/SourcePackages --skip-update --jobs 2 --filter MlxRealModelTests` | 真实资产内存与真实推理 2 项单独执行通过；`build/asset-memory-green-real-model.log` |
+| `LIB_MLX_PROTOCOL_HOST="$PWD/example/build/macos/SourcePackages/debug/ProtocolTestHost" flutter test test` | 最新 13 项通过；`build/dart-swift-asset-fix.log` |
 | `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tool.test_release_gate` | 29 项通过，包含缺失/伪造/过期摘要、宿主锁文件/配置漂移、上下文、计时与实际签名 entitlement 的严格布尔值检查；`build/release-gate-tests.log` |
 | `dart format --output=none --set-exit-if-changed lib test tool example/lib` | 最新 17 文件，0 改动，包含新增资源探针 |
 | `flutter analyze .` | 无问题；`build/flutter-analyze-final.log` |
@@ -69,7 +69,7 @@
 | `python3 tool/fetch_model.py MODEL_PATH --verify-only` | 固定 revision 的全部配置、模板、tokenizer 和权重通过大小/哈希验证 |
 | `flutter test test/openai_transport_test.dart test/types_test.dart test/sse_parser_test.dart` | 最终 Dart 客户端与类型/解析检查 12 项通过 |
 
-最终 Swift 真模型测试实际输出 `Paris`，输入 21、输出 2 token，prefill 0.885 秒；thinking 另一次输出 413 字符，取消/清理约 0.031 秒。MLX active 2,604,110,566 字节、peak 3,550,531,684 字节、allocator cache 0。该证据是 macOS Swift 宿主测试，不是 Flutter 或 iOS 验收。
+最新 Swift 真模型测试实际输出 `Paris`，输入 21、输出 2 token，prefill 0.366 秒；thinking 输出 413 字符、正文为 `43`，取消/清理约 0.020 秒。MLX active 2,604,110,606 字节、peak 3,550,531,684 字节、allocator cache 0。该证据是 macOS Swift 宿主测试，不是 Flutter 或 iOS 验收。
 
 另以 APFS clone 保留相同 manifest、相同权重大小，仅翻转权重数据区一个字节，通过公开 Dart FFI 加载，得到 `invalid_model_assets: Checksum mismatch for model asset: model.safetensors.`，未进入 ready。原始权重没有修改，故意损坏的临时 clone 已删除；日志为 `build/corrupt-assets.log`。
 
@@ -130,6 +130,8 @@ LM 当前主线 `efcedcd4cd245eb03b65050a6bd2c103d7252d42` 的相关代码相同
 
 原生库由根 SwiftPM package 构建；它与 Flutter app 的 framework 有不同的资源访问约定。尝试把 Flutter framework 直接装入 Dart CLI 时，先后遇到动态 framework 搜索和 `Bundle.module` 资源错误，未进入推理，故没有将其计作模型运行失败或成功。正式恢复入口采用原生 SwiftPM 产物；Flutter Release 链路继续由应用内 smoke 验证。最新静态分析、29 项发布门禁测试、YAML 解析与恢复步骤的 `bash -n` 均通过。
 
+资产校验缓冲修复后，以相同固定依赖再次构建原生 Release（113.46 秒，退出 0），并用最新摘要 `32bfbc27ca7839a67d71f14bea63afc5c91e77815b8f825339668df3053abc41` 重跑严格五轮探针。五轮公开功能检查仍全部通过，但 idle active 为 `9,016 / 17,864 / 26,872 / 35,800 / 44,808 B`，跨度 **35,792 B**，cache 均为 0；进程退出 **1**。当前报告为 `build/native-release-asset-fix-resource.json`，run ID `local-native-release-asset-fix-e9513707-9f79-40c6-b45f-d576a92d81a1`；构建/运行日志为 `build/native-release-asset-fix-build.log`、`build/native-release-asset-fix-resource.log`。这确认 Foundation 校验临时内存缺陷已修复，但没有解决独立的上游 MLX 分配器残留，发布阻断继续保留。
+
 ## Flutter 与设备状态
 
 | 平台/能力 | 实现状态 | 本轮实际验证 |
@@ -137,12 +139,12 @@ LM 当前主线 `efcedcd4cd245eb03b65050a6bd2c103d7252d42` 的相关代码相同
 | macOS Swift 核心与公开 Dart dylib 链路 | 实现完成 | 已实际执行并通过，Debug 4K/8K/16K |
 | macOS Flutter Release | 实现完成 | 已实际执行并通过，arm64、ad-hoc 本地签名、独立启动、真实模型 4K |
 | macOS 重复加载的资源恢复 | 尚未完成，上游阻断 | Debug 与原生 Release 实际执行均未通过；不能以功能检查通过替代资源验收 |
-| iOS/iPadOS Flutter SwiftPM 接入 | 实现完成 | 默认 Increased Memory Limit 配置的 Release 构建、严格验签及两台设备安装通过；不是分发签名 |
-| iPhone 11 / iPhone12,1 / iOS 27.0.1 | 接入实现完成；模型 smoke 实际执行未通过 | 默认签名 Release 已安装并独立启动；取得当前源码的失败报告，模型加载返回 load_cancelled，触发源尚未定位；没有 token、上下文或内存性能通过声明 |
-| iPad Air 13-inch M3 / iPad15,5 / iPadOS 27.0.1 (24A446) | 接入实现完成；运行环境阻塞 | 默认签名 Release 已安装，已有模型保留；设备仍要求密码解锁，尚未执行新版真实推理 |
+| iOS/iPadOS Flutter SwiftPM 接入 | 实现完成 | 默认 Increased Memory Limit 配置的 Release 构建、严格验签通过；两台设备曾安装默认版本，最新内存修复产物在 iPhone 安装/启动通过；不是分发签名 |
+| iPhone 11 / iPhone12,1 / iOS 27.0.1 | 接入实现完成；模型 smoke 实际执行未通过 | 已定位并修复校验缓冲保留问题；最新默认签名 Release 独立运行后明确返回 insufficient_memory，当前配置不满足设备预算；没有真实 token 或上下文通过声明 |
+| iPad Air 13-inch M3 / iPad15,5 / iPadOS 27.0.1 (24A446) | 接入实现完成；运行环境阻塞 | 较早默认签名 Release 已安装，已有模型保留；仍要求密码解锁，最新产物安装另遇 CoreDevice 4000 连接超时，尚未执行新版真实推理 |
 | tvOS 核心 | 保留兼容目标 | 本轮按约定不新增独立工程、设备测试或 CI；未单独验证 |
 | 图片/音频/工具执行 | 尚未完成，显式 unsupported | 已验证拒绝及协议语义保留；没有推理支持声明 |
-| iOS 前后台、系统内存警告 | 处理策略实现完成 | 核心受控测试通过；真机生命周期/压力事件尚未执行 |
+| iOS 前后台、系统内存警告 | 处理策略实现完成 | 9 项核心生命周期测试通过；iPhone 已实际观察到内存警告取消加载；前后台恢复及压力后的真模型恢复尚未验证 |
 
 ### iOS 签名与诊断配置
 
@@ -195,7 +197,23 @@ xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner \
 
 iPhone 这次已写出 `Documents/lib_mlx-smoke-progress.json` 和结果文件，说明之前的 Documents 路径错误不再阻止记录。进度到达 `loading_pinned_model`，最终报告为 **failed**：`MlxLifecycleException(load_cancelled): Model loading was cancelled before a resident handle could be published.`，尚未进入 ready 或真实生成。报告的 run ID 与构建中保留的 `local-ios-documents-d7a6fc6f-e10a-44ad-b62e-60b66e1a444c` 一致，源码摘要仍为 `87854edbe36f6d34765506ca5dc18cc26ef5920e4b103c7f05086bc498d28cd1`。原始结果、带实际签名注记的结果及进度分别保存在 `build/iphone-default-release-report-raw.json`、`build/iphone-default-release-report.json`、`build/iphone-default-release-progress.json`。
 
-运行后设备锁状态仍为 passcodeRequired=false，Runner 进程仍存在。这不足以确定取消原因；没有把它直接归因于内存不足、设备锁定或 Xcode 账户。针对该进程的设备日志采集要求本机管理员权限，非交互提权不可用；Console 读取又受本机锁屏阻塞，触发源尚未定位。下一步需要取得加载期间的内存警告、应用状态或后端取消证据；没有用推测修改准入策略或声称该 4 GB 设备已完成模型推理。
+该次运行后设备锁状态仍为 passcodeRequired=false，Runner 进程仍存在，当时尚不足以确定取消原因。设备日志采集要求管理员权限，Console 又受本机锁屏阻塞，因此改为在每次加载的状态所有者中保留首个取消来源。没有根据旧日志修改账户或降低准入；后续项目内存缺陷的复现与修复如下。
+
+### 加载校验内存：项目缺陷与修复
+
+取消诊断现在区分 `application_inactive`、`memory_pressure`、`caller_cancelled` 和后端自行抛出的取消。首个原因随同一加载操作保留，后续通知不能覆盖它；协作取消与忽略取消后被拒绝发布的路径都有测试。新增断言在修改前实际出现 5 次预期失败；修改后 9 项生命周期测试通过。调用方取消测试还显式等待取消到达受控 loader 后才释放结果，避免把另一条有效终止路径误当成失败。
+
+默认 iOS Release 在没有修改签名配置的情况下重新构建，退出 0、耗时 35.77 秒。iPhone 独立启动后的本次错误明确为 `load_cancelled; source=memory_pressure`，确认触发源是 UIKit 内存警告，而不是 Xcode 账户。报告为 `build/iphone-cancellation-report-raw.json`，run ID `local-ios-cancellation-5417471c-3c68-4d5b-8313-18ecd4c2a777`，该诊断版本摘要为 `753ea3535ad9cb2acbbbaaa16ba4b8c9b7cf6aad637222708ef4c64ca5ff2e2a`。
+
+随后隔离验证发现 `FileHandle.read(upToCount:)` 的 Foundation 缓冲会被调用线程的 autorelease pool 保留。即使逐次只读 8 MiB，原循环仍会累积整个 checkpoint。对真实 3,550,670,554 B 权重的单独实验中，物理占用由 2,163,240 B 增至 3,561,622,552 B；只增加每块的 autorelease pool 后，采样峰值为 12,993,088 B，SHA-256 完全一致。日志为 `build/model-hash-unpooled.log`、`build/model-hash-pooled.log`。这是 Mac 上隔离校验的测量，不是 iPhone 峰值。
+
+生产 `ModelAssets.validate` 现在在每块读取、取消检查和哈希更新完成后立即排空该块的 pool，保持全部大小/revision/哈希校验。直接调用真实生产校验器的回归测试在修改前以增长 **3,592,210,976 B** 失败，修改后增长 **11,206,680 B**，低于 64 MiB 断言。日志为 `build/asset-memory-red.log`、`build/asset-memory-green-real-model.log`；真实模型工作流也会执行这项测试，未设置资产的快速 CI 明确跳过。
+
+内存修复后的默认 iOS Release 再次构建退出 0，耗时 **34.58 秒**，严格验签通过，实际 increased-memory-limit=true。iPhone 已安装并在解锁状态独立运行；文件校验完成后，预检明确返回 **insufficient_memory**：additional=3,818,787,782 B、process_available=2,392,062,136 B、process_footprint=69,994,312 B、metal_allocated=45,842,432 B、metal_recommended=2,863,316,992 B、mlx_active=0、mlx_cap=3,836,583,116 B。进程占用是预检时采样，不是峰值；各预算指标不能相加。没有降低预留或绕过 Metal 上限，所以这台 4 GB iPhone 的当前 4K 配置不算推理通过。
+
+最新 iPhone 结果为 `build/iphone-asset-fix-report.json`，run ID `local-ios-asset-fix-c76ccd33-ff24-44e6-b09c-37c4780f56f2`，摘要为 `32bfbc27ca7839a67d71f14bea63afc5c91e77815b8f825339668df3053abc41`；原始报告、实际签名 entitlement、构建和安装分别保存在同名前缀文件中。单平台 gate 正确以退出 1 拒绝 failed 状态。测试结束后仅终止本次 iPhone 进程，保留安装和模型。
+
+再次读取 iPad 状态仍为 passcodeRequired=true。尝试安装同一最新修复产物时，CoreDevice 返回 4000 / tunnel interrupted / timeout，记录为 `build/ipad-asset-fix-install.json`。没有重复无证据重试，也没有将较早默认版本的安装成功写成最新版推理通过。解除条件是设备解锁并恢复可信连接，再执行已有的真机入口；无需重新登录已验证可用的 Xcode 账户。
 
 前后台真机入口是现有工程的 `example/lib/lifecycle_smoke.dart`，无需新建宿主：签名 Release 构建此入口后，等 `Documents/lib_mlx-lifecycle-ready.json` 出现，再将 Settings 前置并重新激活原进程（恢复时不要 `--terminate-existing`）。它校验中断、恢复后的安全停止状态、重新启动、真实生成和卸载，结果写入 `Documents/lib_mlx-lifecycle-report.json`。本轮尚未取得这份物理设备报告。
 
@@ -207,11 +225,13 @@ macOS Flutter Release 实际执行了 `flutter build macos --release --config-on
 
 该次 Release 的进程物理占用采样为 2,890,157,680 B；MLX active 2,604,110,566 B、peak 3,550,531,684 B、cache 0 B。日志分别为 `build/macos-release-build-completion.log` 与 `build/macos-final-signing.txt`。上游 Metal 编译器有 C++17 扩展警告，未修改或抑制；构建退出 0。签名种类为本地 ad-hoc。中途一次构建因磁盘写满失败（`build/macos-release-disk-exhausted.log`），清理本任务已完成检查产生的中间产物后重跑通过；没有清理共享缓存或其他项目。
 
-目录修复后再次构建 macOS Flutter Release、严格验签并以 `open -n` 独立启动，完整真实模型链路再次通过，测试结束后仅关闭本次 app。当前报告为 `build/macos-documents-report.json`，run ID `local-macos-documents-69623d7a-6b78-4080-9fa3-324e551448c3`，源码摘要 `87854edbe36f6d34765506ca5dc18cc26ef5920e4b103c7f05086bc498d28cd1`。13 个检查均完成，实际 4K 探针输入 3,986、输出 2 token，prefill 1.307 秒；thinking 78 个增量，首个 93 ms、总计 899 ms。进程物理占用采样为 2,880,245,384 B；MLX active 2,604,110,606 B、peak 3,550,531,684 B、cache 40 B。这些指标仍不相加，也不把采样值当成进程峰值。构建和签名记录分别为 `build/macos-documents-build.log`、`build/macos-documents-signing.txt`。
+目录修复后再次构建 macOS Flutter Release、严格验签并以 `open -n` 独立启动，完整真实模型链路再次通过，测试结束后仅关闭本次 app。该次报告为 `build/macos-documents-report.json`，run ID `local-macos-documents-69623d7a-6b78-4080-9fa3-324e551448c3`，源码摘要 `87854edbe36f6d34765506ca5dc18cc26ef5920e4b103c7f05086bc498d28cd1`。13 个检查均完成，实际 4K 探针输入 3,986、输出 2 token，prefill 1.307 秒；thinking 78 个增量，首个 93 ms、总计 899 ms。进程物理占用采样为 2,880,245,384 B；MLX active 2,604,110,606 B、peak 3,550,531,684 B、cache 40 B。这些指标仍不相加，也不把采样值当成进程峰值。构建和签名记录分别为 `build/macos-documents-build.log`、`build/macos-documents-signing.txt`。
+
+资产内存修复后，macOS Flutter Release 再次构建退出 0，耗时 **37.75 秒**；严格验签、ad-hoc 本地签名、`open -n` 独立启动及 13 项真实公开链路检查全部通过。最新报告为 `build/macos-asset-fix-report.json`，run ID `local-macos-asset-fix-1c42d32d-f804-4b74-8f30-a0028a3bb931`，与最新 iPhone 产物共用摘要 `32bfbc27ca7839a67d71f14bea63afc5c91e77815b8f825339668df3053abc41`。4K 探针输入 3,986、输出 2 token，prefill 1.301 秒；thinking 78 个增量，首个 92 ms、总计 899 ms。进程物理占用采样为 2,881,228,400 B，MLX active=2,604,110,606 B、peak=3,550,531,684 B、cache=0 B。报告完成后仅关闭本次 Mac app；没有将功能上的重复卸载成功当作分配器恢复通过。
 
 ## CI、发布门禁与交付
 
-快速 CI 运行 Dart/Swift 协议、核心和生命周期测试；Apple job 检查 Release FFI 导出，并编译实际 Flutter macOS/iOS Release 消费工程。宿主 CI 编译使用显式 unsigned 配置，不计运行通过。手动 self-hosted workflow 才执行签名、独立启动的真实模型测试；不新增 tvOS 专用 job。
+快速 CI 运行 Dart/Swift 协议、核心和生命周期测试；Apple job 检查 Release FFI 导出，并编译实际 Flutter macOS/iOS Release 消费工程。宿主 CI 编译使用显式 unsigned 配置，不计运行通过。手动 self-hosted workflow 执行签名、独立启动的真实模型测试，并增加真实资产内存回归及原生真实推理测试；不新增 tvOS 专用 job。
 
 初始实现提交 `233840a68e5f80721756bf6a7628ed586d9f623c` 的 [远端 CI 40412656694](https://github.com/gsmlg-app/lib_mlx/actions/runs/40412656694) 全部通过，包括 Dart、受控 Swift、Release FFI、公开 Dart→Swift 协议集成，以及 macOS/iOS Flutter Release 实际消费工程编译。后续目录修复单独提交；这条旧运行不能代替该后续提交的 CI。
 
@@ -221,4 +241,4 @@ Release/publish/first-publish 必须取得同一 commit 的成功模型 workflow
 
 本轮版本为 `0.2.0-dev.1`，不创建发布 tag 或发布包：默认 iOS 签名阻断已解除，但尚未取得合格真机模型报告，资源恢复也有已复现的上游阻断。新的 real-model macOS job 构建原生 SwiftPM Release 动态库，用其 macOS Metal 资源运行恢复探针；这与独立启动的 Flutter Release 验收分别记录。恢复失败会阻断工作流；发布流程只接受同一 commit 的成功 real-model workflow。代码交付以 `main` 上本轮提交为准；本地记录不等同于远端 CI、商店签名、公证或正式发布。
 
-`python3 tool/release_gate.py --platform macos --run-id local-macos-documents-69623d7a-6b78-4080-9fa3-324e551448c3 build/macos-documents-report.json` 退出 0。此前只提供此 macOS 报告运行完整 gate 时退出 1，明确要求当前签名 iOS 报告（`build/full-release-gate-documents.log`）。签名复核后，单独验证 `build/iphone-default-release-report.json` 及同时提供两平台报告的完整 gate 均退出 **1**，明确拒绝 iOS 的 failed 状态。签名成功没有被当成推理成功，发布仍被阻断。
+较早 Documents 修复报告在当时通过单平台 macOS gate，日志为 `build/full-release-gate-documents.log`；该旧摘要不代替当前源码验证。最新 `python3 tool/release_gate.py --platform macos --run-id local-macos-asset-fix-1c42d32d-f804-4b74-8f30-a0028a3bb931 build/macos-asset-fix-report.json` 退出 **0**。通过 `LIB_MLX_MACOS_REPORT=build/macos-asset-fix-report.json LIB_MLX_IOS_REPORT=build/iphone-asset-fix-report.json python3 tool/release_gate.py` 执行完整 gate 时退出 **1**，明确拒绝 iOS 的 failed 状态，日志为 `build/full-release-gate-asset-fix.log`。签名成功和预算拒绝都没有被当成推理成功，发布仍被阻断。

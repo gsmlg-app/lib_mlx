@@ -4,10 +4,16 @@ import MlxCore
 /// The registry's operation lock may remain held during loading/draining. This independent,
 /// short-lived lock lets a notification close admission and cancel loading immediately.
 final class RuntimeLifecycle: @unchecked Sendable {
+    private enum CancellationCause: String {
+        case inactive = "application_inactive"
+        case pressure = "memory_pressure"
+        case caller = "caller_cancelled"
+    }
     private struct Loading {
         let id: UUID
         let epoch: UUID
         let task: Task<MlxResidentModel, Error>
+        var cancellationCause: CancellationCause?
     }
     private let lock = NSLock()
     private var initialized: Bool
@@ -38,7 +44,10 @@ final class RuntimeLifecycle: @unchecked Sendable {
         lock.lock()
         initialized = true
         foreground = active
-        if !active { epoch = UUID() }
+        if !active {
+            epoch = UUID()
+            if loading?.cancellationCause == nil { loading?.cancellationCause = .inactive }
+        }
         let task = !active ? loading?.task : nil
         lock.unlock()
         // Cancellation handlers may re-enter other owners; never invoke them under this lock.
@@ -47,6 +56,7 @@ final class RuntimeLifecycle: @unchecked Sendable {
     func cancelLoading() {
         lock.lock()
         epoch = UUID()
+        if loading?.cancellationCause == nil { loading?.cancellationCause = .pressure }
         let task = loading?.task
         lock.unlock()
         task?.cancel()
@@ -57,7 +67,7 @@ final class RuntimeLifecycle: @unchecked Sendable {
         do {
             let model = try await withTaskCancellationHandler {
                 try await ticket.task.value
-            } onCancel: { ticket.task.cancel() }
+            } onCancel: { self.cancelFromCaller(ticket) }
             do {
                 // Commit and the final foreground/epoch check share the notification gate.
                 // An old loader that ignores cancellation can never publish after resign/resume.
@@ -68,9 +78,9 @@ final class RuntimeLifecycle: @unchecked Sendable {
                 throw error
             }
         } catch {
-            finish(ticket)
+            let cause = finish(ticket)
             if error is CancellationError {
-                throw MlxCoreError("load_cancelled", "Model loading was cancelled before a resident handle could be published.")
+                throw MlxCoreError("load_cancelled", "Model loading was cancelled before a resident handle could be published; source=\(cause?.rawValue ?? "backend_cancelled").")
             }
             throw error
         }
@@ -87,13 +97,27 @@ final class RuntimeLifecycle: @unchecked Sendable {
                         publish: @Sendable (MlxResidentModel) -> Void) throws {
         lock.lock(); defer { lock.unlock() }
         guard initialized && foreground, epoch == ticket.epoch,
-              loading?.id == ticket.id, !ticket.task.isCancelled else { throw inactive() }
+              loading?.id == ticket.id, !ticket.task.isCancelled else {
+            throw MlxCoreError("app_suspended", "Model loading cannot publish a resident handle; source=\(loading?.cancellationCause?.rawValue ?? "application_inactive").")
+        }
         publish(model)
         loading = nil
     }
-    private func finish(_ ticket: Loading) {
+    private func cancelFromCaller(_ ticket: Loading) {
+        lock.lock()
+        if loading?.id == ticket.id {
+            epoch = UUID()
+            if loading?.cancellationCause == nil { loading?.cancellationCause = .caller }
+        }
+        lock.unlock()
+        ticket.task.cancel()
+    }
+    private func finish(_ ticket: Loading) -> CancellationCause? {
         lock.lock(); defer { lock.unlock() }
-        if loading?.id == ticket.id { loading = nil }
+        guard loading?.id == ticket.id else { return nil }
+        let cause = loading?.cancellationCause
+        loading = nil
+        return cause
     }
     private func inactive() -> MlxCoreError {
         MlxCoreError("app_suspended", "Model loading was cancelled or requires a foreground application.")

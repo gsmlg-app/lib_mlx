@@ -132,6 +132,12 @@ jobs:
           done
           echo 'No fresh macOS smoke report within 1200 seconds' >&2
           exit 1
+      - name: Verify pinned assets have bounded temporary memory and run real core inference
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIB_MLX_TEST_MODEL_PATH="$MODEL_PATH" swift test --jobs 2 --filter MlxRealModelTests \
+            2>&1 | tee build/release-evidence/macos-native-model-tests.log
       - name: Require native Release allocator recovery across repeated public calls
         shell: bash
         run: |

@@ -8,6 +8,7 @@
 - Add controlled protocol, public Dart/FFI, actual-model and Flutter Release acceptance entry points with evidence-based release gates.
 - Add a repeated public-chain allocator recovery regression and release gate; recovery currently fails on the pinned upstream quantization implementation.
 - Resolve smoke-report and model locations through the Apple sandbox Documents API.
+- Release asset-verification read buffers per chunk and preserve the first load-cancellation source in diagnostics.
 
 Development version; consult doc/validation.md for executed checks and blockers. No four-platform, full-modality or universal 128K validation claim.
 

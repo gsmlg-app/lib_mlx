@@ -37,9 +37,16 @@ enum ModelAssets {
             var sha256 = SHA256()
             var sha1 = Insecure.SHA1()
             if asset.git_blob_sha1 != nil { sha1.update(data: Data("blob \(asset.size)\0".utf8)) }
-            while let data = try source.read(upToCount: 8 * 1024 * 1024), !data.isEmpty {
-                try Task.checkCancellation()
-                if asset.sha256 != nil { sha256.update(data: data) } else { sha1.update(data: data) }
+            while true {
+                // Foundation read buffers are autoreleased. Drain each chunk before the
+                // next read; a detached load can otherwise retain the entire checkpoint.
+                let hasData = try autoreleasepool {
+                    guard let data = try source.read(upToCount: 8 * 1024 * 1024), !data.isEmpty else { return false }
+                    try Task.checkCancellation()
+                    if asset.sha256 != nil { sha256.update(data: data) } else { sha1.update(data: data) }
+                    return true
+                }
+                if !hasData { break }
             }
             let digest = asset.sha256 != nil ? sha256.finalize().map { String(format: "%02x", $0) }.joined()
                 : sha1.finalize().map { String(format: "%02x", $0) }.joined()

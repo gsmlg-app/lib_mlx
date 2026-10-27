@@ -132,6 +132,24 @@ private actor SinkGate {
 }
 
 final class MlxRealModelTests: XCTestCase {
+    func testPinnedAssetVerificationBoundsTemporaryMemory() async throws {
+        guard let path = ProcessInfo.processInfo.environment["LIB_MLX_TEST_MODEL_PATH"] else {
+            throw XCTSkip("Set LIB_MLX_TEST_MODEL_PATH to measure the pinned checkpoint's asset verification.")
+        }
+        let growth = try await Task.detached {
+            // A long-lived caller pool must not retain every Foundation read buffer.
+            try autoreleasepool {
+                let before = try DeviceBudgetSnapshot.current().processFootprintBytes
+                _ = try ModelAssets.validate(config: .init(modelPath: path))
+                let after = try DeviceBudgetSnapshot.current().processFootprintBytes
+                return after > before ? after - before : 0
+            }
+        }.value
+        print("REAL_MLX asset_verification_footprint_growth_bytes=\(growth)")
+        XCTAssertLessThan(growth, 64 * 1024 * 1024,
+                         "Asset verification must release chunk buffers instead of retaining a checkpoint-sized temporary allocation")
+    }
+
     func testPinnedCheckpointTextGenerationAndContextRejection() async throws {
         guard let path = ProcessInfo.processInfo.environment["LIB_MLX_TEST_MODEL_PATH"] else {
             throw XCTSkip("Set LIB_MLX_TEST_MODEL_PATH to the verified pinned model directory for the hardware integration test.")

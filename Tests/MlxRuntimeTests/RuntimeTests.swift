@@ -61,7 +61,10 @@ final class RuntimeLifecycleTests: XCTestCase {
         XCTAssertEqual(state.publishCount, 0)
         await loader.release()
         do { _ = try await task.value; XCTFail("Cancelled loading must not return ready") }
-        catch let error as MlxCoreError { XCTAssertEqual(error.code, "load_cancelled") }
+        catch let error as MlxCoreError {
+            XCTAssertEqual(error.code, "load_cancelled")
+            XCTAssertTrue(error.message.contains("application_inactive"), error.message)
+        }
     }
 
     func testCancellationIgnoringLoaderCannotPublishAfterResignAndResume() async throws {
@@ -76,7 +79,10 @@ final class RuntimeLifecycleTests: XCTestCase {
         XCTAssertTrue(state.wasCancelled)
         await loader.release()
         do { _ = try await task.value; XCTFail("A stale load cannot become ready after resume") }
-        catch let error as MlxCoreError { XCTAssertEqual(error.code, "app_suspended") }
+        catch let error as MlxCoreError {
+            XCTAssertEqual(error.code, "app_suspended")
+            XCTAssertTrue(error.message.contains("application_inactive"), error.message)
+        }
         XCTAssertEqual(state.publishCount, 0)
         XCTAssertEqual(state.shutdownCount, 1, "The unpublished model must be shut down before returning")
         let snapshot = await model.snapshot()
@@ -133,6 +139,62 @@ final class RuntimeLifecycleTests: XCTestCase {
         XCTAssertEqual(state.publishCount, 1)
         XCTAssertEqual(state.shutdownCount, 0)
         await result.shutdown()
+    }
+
+    func testCooperativeMemoryCancellationReportsPressure() async throws {
+        let lifecycle = RuntimeLifecycle(initiallyForeground: true)
+        let state = LifecycleProbe()
+        let loader = ControlledRuntimeLoader(model: makeModel(state), state: state, ignoresCancellation: false)
+        let task = Task { try await lifecycle.load(using: { try await loader.load() }, publish: { _ in state.published() }) }
+        await loader.waitStarted()
+        lifecycle.cancelLoading()
+        await loader.release()
+        do { _ = try await task.value; XCTFail("A pressure-cancelled load cannot publish") }
+        catch let error as MlxCoreError {
+            XCTAssertEqual(error.code, "load_cancelled")
+            XCTAssertTrue(error.message.contains("memory_pressure"), error.message)
+        }
+        XCTAssertEqual(state.publishCount, 0)
+        XCTAssertTrue(lifecycle.isForeground)
+    }
+
+    func testFirstLoadCancellationCauseSurvivesLaterNotifications() async throws {
+        let lifecycle = RuntimeLifecycle(initiallyForeground: true)
+        let state = LifecycleProbe()
+        let loader = ControlledRuntimeLoader(model: makeModel(state), state: state, ignoresCancellation: true)
+        let task = Task { try await lifecycle.load(using: { try await loader.load() }, publish: { _ in state.published() }) }
+        await loader.waitStarted()
+        lifecycle.cancelLoading()
+        lifecycle.setForeground(false)
+        lifecycle.setForeground(true)
+        await loader.release()
+        do { _ = try await task.value; XCTFail("An invalidated load cannot publish") }
+        catch let error as MlxCoreError {
+            XCTAssertTrue(error.message.contains("memory_pressure"), error.message)
+            XCTAssertFalse(error.message.contains("application_inactive"), error.message)
+        }
+        XCTAssertEqual(state.publishCount, 0)
+        XCTAssertEqual(state.shutdownCount, 1)
+    }
+
+    func testCallerCancellationReportsCaller() async throws {
+        let lifecycle = RuntimeLifecycle(initiallyForeground: true)
+        let state = LifecycleProbe()
+        let loader = ControlledRuntimeLoader(model: makeModel(state), state: state, ignoresCancellation: false)
+        let task = Task { try await lifecycle.load(using: { try await loader.load() }, publish: { _ in state.published() }) }
+        await loader.waitStarted()
+        task.cancel()
+        // Loader startup can precede registration of the caller's cancellation handler.
+        // Hold its result until cancellation reaches it, so this exercises its cooperative path.
+        while !state.wasCancelled { await Task.yield() }
+        await loader.release()
+        do { _ = try await task.value; XCTFail("A caller-cancelled load cannot publish") }
+        catch let error as MlxCoreError {
+            XCTAssertEqual(error.code, "load_cancelled")
+            XCTAssertTrue(error.message.contains("caller_cancelled"), error.message)
+        }
+        XCTAssertEqual(state.publishCount, 0)
+        XCTAssertTrue(lifecycle.isForeground)
     }
 
     private func makeModel(_ state: LifecycleProbe) -> MlxResidentModel {
