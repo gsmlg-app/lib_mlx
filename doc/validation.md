@@ -137,18 +137,18 @@ LM 当前主线 `efcedcd4cd245eb03b65050a6bd2c103d7252d42` 的相关代码相同
 | macOS Swift 核心与公开 Dart dylib 链路 | 实现完成 | 已实际执行并通过，Debug 4K/8K/16K |
 | macOS Flutter Release | 实现完成 | 已实际执行并通过，arm64、ad-hoc 本地签名、独立启动、真实模型 4K |
 | macOS 重复加载的资源恢复 | 尚未完成，上游阻断 | Debug 与原生 Release 实际执行均未通过；不能以功能检查通过替代资源验收 |
-| iOS/iPadOS Flutter SwiftPM 接入 | 实现完成 | 标准内存诊断 Release 消费工程构建、签名、安装通过；默认 entitlement 配置受 profile 阻塞 |
-| iPhone 11 / iPhone12,1 / iOS 27.0.1 | 接入实现完成；推理验收尚未完成 | 初次 smoke 的目录错误已定位并修复；新版签名 Release 构建通过，设备尚未重测，不能认定推理通过或断言 4 GB 设备容量 |
-| iPad Air 13-inch M3 / iPad15,5 / iPadOS 27.0.1 (24A446) | 接入实现完成；运行环境阻塞 | 解锁后定位到 smoke 目录错误，修复版构建通过；设备再次要求密码解锁，尚未执行新版真实推理 |
+| iOS/iPadOS Flutter SwiftPM 接入 | 实现完成 | 默认 Increased Memory Limit 配置的 Release 构建、严格验签及两台设备安装通过；不是分发签名 |
+| iPhone 11 / iPhone12,1 / iOS 27.0.1 | 接入实现完成；模型 smoke 实际执行未通过 | 默认签名 Release 已安装并独立启动；取得当前源码的失败报告，模型加载返回 load_cancelled，触发源尚未定位；没有 token、上下文或内存性能通过声明 |
+| iPad Air 13-inch M3 / iPad15,5 / iPadOS 27.0.1 (24A446) | 接入实现完成；运行环境阻塞 | 默认签名 Release 已安装，已有模型保留；设备仍要求密码解锁，尚未执行新版真实推理 |
 | tvOS 核心 | 保留兼容目标 | 本轮按约定不新增独立工程、设备测试或 CI；未单独验证 |
 | 图片/音频/工具执行 | 尚未完成，显式 unsupported | 已验证拒绝及协议语义保留；没有推理支持声明 |
 | iOS 前后台、系统内存警告 | 处理策略实现完成 | 核心受控测试通过；真机生命周期/压力事件尚未执行 |
 
 ### iOS 签名与诊断配置
 
-默认 Release 请求 `com.apple.developer.kernel.increased-memory-limit`。实际 `xcodebuild` 在签名阶段失败：当前 provisioning profile 不包含 Increased Memory Limit capability，且 Xcode 保存的 Apple 账号登录状态无效，无法刷新 profile。日志为 `build/ios-release-build.log`；没有输出凭据。需要在 Xcode 重新登录并生成包含该 capability 的 profile 后，重新构建和运行默认配置。
+默认 Release 请求 `com.apple.developer.kernel.increased-memory-limit`。早先的 `xcodebuild` 在签名阶段失败：当时选中的 wildcard provisioning profile 不包含 Increased Memory Limit capability，命令行还报告账户凭据无法加载。日志为 `build/ios-release-build.log`。这些旧日志不能证明当前 GUI 账户状态异常；签名阻断已在下述复核中解除。
 
-用户允许更新后，又实际执行了带 `-allowProvisioningUpdates` 的默认 Release 构建；仍退出 65。Xcode 明确报告 `missing Xcode-Token`、`No Accounts`，已有 wildcard profile 也不包含该 entitlement。账号标识在保存日志前已打码，日志为 `build/ios-default-profile-refresh.log`。自动刷新不能代替本机账户重新登录，没有声称 profile 更新成功。
+此前实际执行带 `-allowProvisioningUpdates` 的默认 Release 构建时仍退出 65。命令行报告 `missing Xcode-Token`、`No Accounts`，已有 wildcard profile 也不包含该 entitlement。账号标识已打码，日志为 `build/ios-default-profile-refresh.log`。当时没有成功更新 profile；不能将这一历史结果推定为用户现在必须重新登录。
 
 为独立检查标准系统内存预算下的真实设备行为，另用任务临时的空 entitlement 文件覆盖构建参数，未修改项目 Release entitlement，也未降低模型预算或校验。这份诊断 Release 构建与 `codesign --verify --deep --strict` 均通过，6 个 FFI 符号保留；签名为 development provisioning，`get-task-allow=true`，并非分发签名。提取的实际签名确认 increased-memory-limit=false、debugging-memory-limit=false；因此即使模型 smoke 成功，也不能代替默认配置的发布验收。
 
@@ -172,7 +172,30 @@ xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner \
 
 修复后的标准内存诊断 Release 已通过实际 iOS 消费工程构建、严格签名检查，`lib-mlx.framework` 的导出表保留全部 6 个 FFI 符号；日志为 `build/ios-documents-build.log`。该次源码摘要为 `87854edbe36f6d34765506ca5dc18cc26ef5920e4b103c7f05086bc498d28cd1`，run ID 为 `local-ios-documents-d7a6fc6f-e10a-44ad-b62e-60b66e1a444c`。此时 iPad 的实时锁状态为 `passcodeRequired=true`，用户也说明暂时无法解锁，因此尚未取得新版模型报告；没有将这次编译通过计为真机推理通过。
 
-这份签名 app 在默认签名重试前以 APFS clone 保留于 `build/ios-documents-standard.app`，再次严格验签后安装到 iPad，已有模型保留。默认重试失败时 Xcode 清除了 Products 中的旧签名，因此应使用这份保存的诊断 app，不能把失败重试后的 `Runner.app` 当成有效签名产物。iPhone 当时无法建立可信连接/使用断言（CoreDevice 4016），新版 app 尚未安装到 iPhone。
+这份签名 app 在早先默认签名重试前以 APFS clone 保留于 `build/ios-documents-standard.app`，再次严格验签后安装到 iPad，已有模型保留。当时默认重试失败时 Xcode 清除了 Products 中的旧签名，保存的 clone 是该轮有效诊断产物。iPhone 当时无法建立可信连接/使用断言（CoreDevice 4016），该轮新版 app 尚未安装到 iPhone；后续默认配置的成功产物和安装见下文。
+
+### 默认签名复核：阻断已解除
+
+2026-10-27 晚间复核确认，GUI 与命令行使用同一份 Xcode 27.1，Team、bundle ID 和自动签名选择一致，没有硬编码旧 profile。Xcode 的 Release Signing & Capabilities 页面已选中本项目专用的 `iOS Team Provisioning Profile: app.gsmlg.libMlxExample`，明确包含 Increased Memory Limit 和两台测试设备；读取实际 profile 也确认该 entitlement 为布尔 true。因此没有继续要求用户重新登录，也没有修改工程签名配置或删除 entitlement。打开 GUI 产生的格式/objectVersion 自动改写经语义比较后撤回，构建使用原提交的工程设置。
+
+在 `example` 目录执行默认配置：
+
+```sh
+xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner \
+  -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+  -derivedDataPath build/ios -clonedSourcePackagesDirPath build/macos/SourcePackages \
+  -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+  -jobs 2 COMPILER_INDEX_STORE_ENABLE=NO DEBUG_INFORMATION_FORMAT=dwarf \
+  -quiet build
+```
+
+实际退出 **0**，耗时 **373.01 秒**，没有账户或 profile 错误。`codesign --verify --deep --strict` 通过；实际签名与 embedded profile 均包含 increased-memory-limit=true、debugging-memory-limit=false，AOT framework 和全部 6 个 FFI 导出符号保留。签名仍为 development provisioning、get-task-allow=true，不是分发签名。构建日志为 `build/ios-default-signing-recheck.log`，签名和 profile 检查记录为 `build/ios-default-signing-recheck-evidence.json`、`build/ios-default-signing-recheck-entitlements.plist`。
+
+这份默认配置产物已成功安装到 iPhone 11 和 iPad Air，分别记录于 `build/iphone-default-release-install.json`、`build/ipad-default-release-install.json`。iPad 此时仍为 passcodeRequired=true，不能计为运行通过。iPhone 已解锁；本机固定快照重新通过校验后复制到其应用 Documents，再使用 `devicectl device process launch` 独立启动成功，没有附加调试器。安装或启动本身不作为真实推理通过的证据。
+
+iPhone 这次已写出 `Documents/lib_mlx-smoke-progress.json` 和结果文件，说明之前的 Documents 路径错误不再阻止记录。进度到达 `loading_pinned_model`，最终报告为 **failed**：`MlxLifecycleException(load_cancelled): Model loading was cancelled before a resident handle could be published.`，尚未进入 ready 或真实生成。报告的 run ID 与构建中保留的 `local-ios-documents-d7a6fc6f-e10a-44ad-b62e-60b66e1a444c` 一致，源码摘要仍为 `87854edbe36f6d34765506ca5dc18cc26ef5920e4b103c7f05086bc498d28cd1`。原始结果、带实际签名注记的结果及进度分别保存在 `build/iphone-default-release-report-raw.json`、`build/iphone-default-release-report.json`、`build/iphone-default-release-progress.json`。
+
+运行后设备锁状态仍为 passcodeRequired=false，Runner 进程仍存在。这不足以确定取消原因；没有把它直接归因于内存不足、设备锁定或 Xcode 账户。针对该进程的设备日志采集要求本机管理员权限，非交互提权不可用；Console 读取又受本机锁屏阻塞，触发源尚未定位。下一步需要取得加载期间的内存警告、应用状态或后端取消证据；没有用推测修改准入策略或声称该 4 GB 设备已完成模型推理。
 
 前后台真机入口是现有工程的 `example/lib/lifecycle_smoke.dart`，无需新建宿主：签名 Release 构建此入口后，等 `Documents/lib_mlx-lifecycle-ready.json` 出现，再将 Settings 前置并重新激活原进程（恢复时不要 `--terminate-existing`）。它校验中断、恢复后的安全停止状态、重新启动、真实生成和卸载，结果写入 `Documents/lib_mlx-lifecycle-report.json`。本轮尚未取得这份物理设备报告。
 
@@ -192,10 +215,10 @@ macOS Flutter Release 实际执行了 `flutter build macos --release --config-on
 
 初始实现提交 `233840a68e5f80721756bf6a7628ed586d9f623c` 的 [远端 CI 40412656694](https://github.com/gsmlg-app/lib_mlx/actions/runs/40412656694) 全部通过，包括 Dart、受控 Swift、Release FFI、公开 Dart→Swift 协议集成，以及 macOS/iOS Flutter Release 实际消费工程编译。后续目录修复单独提交；这条旧运行不能代替该后续提交的 CI。
 
-目录修复提交 `935502816eb58a352baf312f0b4388294e7c3a5e` 的 [远端 CI 40420777235](https://github.com/gsmlg-app/lib_mlx/actions/runs/40420777235) 也已全部通过，包括两种 Flutter Release 消费工程编译。新增资源恢复探针及门禁的后续提交需要单独记录 CI 状态；上述两次成功不表示资源恢复通过。
+目录修复提交 `935502816eb58a352baf312f0b4388294e7c3a5e` 的 [远端 CI 40420777235](https://github.com/gsmlg-app/lib_mlx/actions/runs/40420777235) 也已全部通过，包括两种 Flutter Release 消费工程编译。新增资源恢复探针及门禁的提交 `583cf09504caa23a95ceabc54c6ffddd080743a1` 的 [远端 CI 40429043531](https://github.com/gsmlg-app/lib_mlx/actions/runs/40429043531) 已全部通过；这些快速 CI 成功不表示真实模型资源恢复通过。
 
 Release/publish/first-publish 必须取得同一 commit 的成功模型 workflow 报告，验证当前源码摘要（包含宿主配置与锁文件）、固定模型 revision、真实 token/计时、接近上下文窗口的输入、thinking、取消/卸载及签名。iOS 报告的 Increased Memory Limit 必须来自实际签名且严格为布尔 true；标准内存诊断构建不能满足此门禁。没有两平台合格报告时，门禁拒绝发布。
 
-本轮版本为 `0.2.0-dev.1`，不创建发布 tag 或发布包：默认 iOS 签名和真实设备链路尚未通过，资源恢复又有已复现的上游阻断。新的 real-model macOS job 构建原生 SwiftPM Release 动态库，用其 macOS Metal 资源运行恢复探针；这与独立启动的 Flutter Release 验收分别记录。恢复失败会阻断工作流；发布流程只接受同一 commit 的成功 real-model workflow。代码交付以 `main` 上本轮提交为准；本地记录不等同于远端 CI、商店签名、公证或正式发布。
+本轮版本为 `0.2.0-dev.1`，不创建发布 tag 或发布包：默认 iOS 签名阻断已解除，但尚未取得合格真机模型报告，资源恢复也有已复现的上游阻断。新的 real-model macOS job 构建原生 SwiftPM Release 动态库，用其 macOS Metal 资源运行恢复探针；这与独立启动的 Flutter Release 验收分别记录。恢复失败会阻断工作流；发布流程只接受同一 commit 的成功 real-model workflow。代码交付以 `main` 上本轮提交为准；本地记录不等同于远端 CI、商店签名、公证或正式发布。
 
-最终 `python3 tool/release_gate.py --platform macos --run-id local-macos-documents-69623d7a-6b78-4080-9fa3-324e551448c3 build/macos-documents-report.json` 退出 0。只提供此 macOS 报告运行完整 gate 时退出 1，明确要求当前签名 iOS 报告（`build/full-release-gate-documents.log`）；该拒绝符合预期，没有绕过。
+`python3 tool/release_gate.py --platform macos --run-id local-macos-documents-69623d7a-6b78-4080-9fa3-324e551448c3 build/macos-documents-report.json` 退出 0。此前只提供此 macOS 报告运行完整 gate 时退出 1，明确要求当前签名 iOS 报告（`build/full-release-gate-documents.log`）。签名复核后，单独验证 `build/iphone-default-release-report.json` 及同时提供两平台报告的完整 gate 均退出 **1**，明确拒绝 iOS 的 failed 状态。签名成功没有被当成推理成功，发布仍被阻断。
