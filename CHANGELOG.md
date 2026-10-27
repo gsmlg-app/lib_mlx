@@ -6,6 +6,8 @@
 - Add context/output admission, chunked prefill, isolated request KV, device/process budgeting and memory-pressure lifecycle handling.
 - Add shared macOS/iOS/iPadOS Flutter SwiftPM integration. Remove the broken CocoaPods path; requires migration and Swift tools 6.3+.
 - Add controlled protocol, public Dart/FFI, actual-model and Flutter Release acceptance entry points with evidence-based release gates.
+- Add a repeated public-chain allocator recovery regression and release gate; recovery currently fails on the pinned upstream quantization implementation.
+- Resolve smoke-report and model locations through the Apple sandbox Documents API.
 
 Development version; consult doc/validation.md for executed checks and blockers. No four-platform, full-modality or universal 128K validation claim.
 

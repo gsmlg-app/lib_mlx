@@ -132,6 +132,25 @@ jobs:
           done
           echo 'No fresh macOS smoke report within 1200 seconds' >&2
           exit 1
+      - name: Require native Release allocator recovery across repeated public calls
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift build --jobs 2 -c release --product MlxRuntimeFFI
+          native_bin="$(swift build -c release --show-bin-path)"
+          native_library="$native_bin/libMlxRuntimeFFI.dylib"
+          metallib="$native_bin/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+          if [[ ! -f "$metallib" ]]; then
+            metallib="$native_bin/mlx-swift_Cmlx.bundle/default.metallib"
+          fi
+          test -f "$native_library"
+          test -f "$metallib"
+          source_digest="$(python3 tool/release_gate.py --source-digest)"
+          LIB_MLX_SMOKE_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-macos-resource" \
+          LIB_MLX_SOURCE_DIGEST="$source_digest" \
+            dart run tool/resource_smoke.dart "$MODEL_PATH" "$native_library" "$metallib" \
+              build/release-evidence/macos-resource-report.json
+          test "$(python3 tool/release_gate.py --source-digest)" = "$source_digest"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

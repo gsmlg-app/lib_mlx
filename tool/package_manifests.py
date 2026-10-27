@@ -4,6 +4,8 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
+# The tagged combination builds and supports cancellable Gemma prefill. The
+# newer allocator fix is blocked by LM's compile-state API; see doc/validation.md.
 DEPENDENCIES = '''        .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.32.3"),
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.32.3"),
         .package(url: "https://github.com/huggingface/swift-transformers", exact: "1.3.0"),
